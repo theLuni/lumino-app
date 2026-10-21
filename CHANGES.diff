@@ -1,0 +1,810 @@
+Only in lumino_opt: OPTIMIZATION_NOTES.md
+diff -ru lumino/flutter_app/lib/core/app_state.dart lumino_opt/flutter_app/lib/core/app_state.dart
+--- lumino/flutter_app/lib/core/app_state.dart	2026-10-20 06:16:28.000000000 +0000
++++ lumino_opt/flutter_app/lib/core/app_state.dart	2026-10-20 13:24:43.635094766 +0000
+@@ -137,17 +137,23 @@
+   final Set<String> _heldKeys = {};
+   StreamSubscription<NodeChange>? _nodeSubscription;
+   bool _listeningToAudio = false;
++  Timer? _notifyTimer;
++
++  /// Background loaders (covers, artwork, releases) finish dozens of items in a
++  /// row. Each one used to rebuild the whole UI; coalescing them into one rebuild
++  /// per short window keeps scrolling and playback responsive.
++  void _notifySoon() {
++    if (_notifyTimer != null) return;
++    _notifyTimer = Timer(const Duration(milliseconds: 120), () {
++      _notifyTimer = null;
++      notifyListeners();
++    });
++  }
+ 
+   Track? get current => queue.isEmpty || qi < 0 || qi >= queue.length ? null : byId[queue[qi]];
+   bool get playing => audio.playing;
+   bool get playbackPending => _playbackPending;
+-  List<Track> availableTracks() {
+-    final unique = <String, Track>{};
+-    for (final track in byId.values) {
+-      if (track.id.isNotEmpty) unique[track.id] = track;
+-    }
+-    return unique.values.toList();
+-  }
++  List<Track> availableTracks() => byId.values.where((track) => track.id.isNotEmpty).toList();
+ 
+   List<Track> libraryTracks() {
+     final unique = <String, Track>{};
+@@ -272,6 +278,7 @@
+   @override
+   void dispose() {
+     _nodeSubscription?.cancel();
++    _notifyTimer?.cancel();
+     _toastTimer?.cancel();
+     _recsTimer?.cancel();
+     audio.positionNotifier.removeListener(_onPosition);
+@@ -482,7 +489,7 @@
+     final base = node.base;
+     if (base.isEmpty) return value;
+     if (value.startsWith('/api/audio')) return '$base$value';
+-    if (RegExp(r'^https:\/\/([^/]*\.)?hitmoz\.(org|com)\/', caseSensitive: false).hasMatch(value)) {
++    if (cachedRe(r'^https:\/\/([^/]*\.)?hitmoz\.(org|com)\/', caseSensitive: false).hasMatch(value)) {
+       return '$base/api/audio?url=${Uri.encodeComponent(value)}';
+     }
+     return value;
+@@ -728,7 +735,7 @@
+   void _onAudioError(String message) {
+     final track = current;
+     if (track == null) return;
+-    if (RegExp(r'/api/audio|hitmoz', caseSensitive: false).hasMatch(track.src)) {
++    if (cachedRe(r'/api/audio|hitmoz', caseSensitive: false).hasMatch(track.src)) {
+       unawaited(recoverOnOtherNode().then((_) {
+         if (current?.id == track.id && audio.lastError.isNotEmpty) {
+           showToast('Couldn’t load audio from the selected catalog. Try another search result.');
+@@ -790,7 +797,7 @@
+             }
+           }
+         }));
+-        if (changed) notifyListeners();
++        if (changed) _notifySoon();
+         _coverBusy--;
+         _pumpCovers();
+       }();
+@@ -810,7 +817,7 @@
+         info = ArtistInfo.empty(name);
+       }
+       artists[key] = info;
+-      notifyListeners();
++      _notifySoon();
+       if (info.avatar.isEmpty) {
+         Timer(const Duration(milliseconds: 50000), () {
+           _artistFutures.remove(key);
+@@ -860,7 +867,7 @@
+     }
+     if (changed) {
+       ensureCovers(result.tracks);
+-      notifyListeners();
++      _notifySoon();
+     }
+     return result.tracks;
+   }
+@@ -895,7 +902,7 @@
+         }
+         homeReleases[job.key] = index;
+         _homeRelBusy--;
+-        notifyListeners();
++        _notifySoon();
+         _pumpHomeReleases();
+       }();
+     }
+@@ -939,7 +946,7 @@
+   // ------------------------------------------------------------------- taste / mixes / recs
+ 
+   bool isUnknownArtist(String key) =>
+-      key.isEmpty || RegExp(r'unknownartist|неизвестныйисполнитель|unknown artist|неизвестный исполнитель').hasMatch(key);
++      key.isEmpty || cachedRe(r'unknownartist|неизвестныйисполнитель|unknown artist|неизвестный исполнитель').hasMatch(key);
+ 
+   void recordPlay(Track track) {
+     for (var i = 0; i < track.artists.length; i++) {
+@@ -1028,7 +1035,10 @@
+           final filler = seededShuffle(
+             free.where((t) => !have.contains(t.id)).toList(),
+             seed + 13 + mixes.length,
+-          )..sort((a, b) => _tasteWeight(b, weights).compareTo(_tasteWeight(a, weights)));
++          );
++          // Score each track once instead of inside the comparator.
++          final fillerWeight = {for (final t in filler) t.id: _tasteWeight(t, weights)};
++          filler.sort((a, b) => fillerWeight[b.id]!.compareTo(fillerWeight[a.id]!));
+           mix.addAll(filler);
+         }
+         if (mix.length < 3) continue;
+@@ -1140,7 +1150,7 @@
+       _recSeedKey = seedKey;
+       recsDone = true;
+       ensureCovers([...tracksOut, ...availableTracks()]);
+-      notifyListeners();
++      _notifySoon();
+     } finally {
+       _recsRunning = false;
+       recsDone = true;
+@@ -1162,10 +1172,10 @@
+     final status = catalog.searchStatus;
+     if (!status.unavailable) return '';
+     final error = status.error;
+-    if (RegExp(r'direct audio links?|прямые аудиоссылки', caseSensitive: false).hasMatch(error)) {
++    if (cachedRe(r'direct audio links?|прямые аудиоссылки', caseSensitive: false).hasMatch(error)) {
+       return 'The catalog found pages but returned no direct audio file links.';
+     }
+-    if (RegExp(r'ERR_NAME_NOT_RESOLVED|ENOTFOUND|EAI_AGAIN|Failed host lookup', caseSensitive: false)
++    if (cachedRe(r'ERR_NAME_NOT_RESOLVED|ENOTFOUND|EAI_AGAIN|Failed host lookup', caseSensitive: false)
+         .hasMatch(error)) {
+       return 'The online catalog is unreachable (DNS error). Check your connection or DNS server.';
+     }
+@@ -1260,7 +1270,7 @@
+     if (track != null) {
+       _releaseTrackCache[key] = track;
+       song.catalog = track;
+-      notifyListeners();
++      _notifySoon();
+     }
+     return track;
+   }
+diff -ru lumino/flutter_app/lib/core/catalog_service.dart lumino_opt/flutter_app/lib/core/catalog_service.dart
+--- lumino/flutter_app/lib/core/catalog_service.dart	2026-10-20 06:16:28.000000000 +0000
++++ lumino_opt/flutter_app/lib/core/catalog_service.dart	2026-10-20 13:24:43.635776717 +0000
+@@ -57,6 +57,7 @@
+     if (tracks.isNotEmpty) {
+       _down = false;
+       _lastError = '';
++      if (_cache.length > 200) _cache.clear();
+       _cache[q.toLowerCase()] = (at: DateTime.now().millisecondsSinceEpoch, tracks: tracks);
+       return tracks;
+     }
+@@ -101,7 +102,7 @@
+   }
+ }
+ 
+-final RegExp _creditSplit = RegExp(
++final RegExp _creditSplit = cachedRe(
+   r'\s*(?:,|;|/|&|\+|×|\bx\b|\bfeat\.?|\bft\.?|\bfeaturing\b|\bvs\.?|\bи\b)\s*',
+   caseSensitive: false,
+ );
+@@ -124,9 +125,9 @@
+ 
+ String coreTitle(String title) {
+   return title
+-      .replaceAll(RegExp(r'\([^)]*\)|\[[^\]]*\]'), ' ')
+-      .replaceAll(RegExp(r'\b(?:feat|ft|prod|reprod|ft\.|feat\.)\b.*$', caseSensitive: false), ' ')
+-      .replaceAll(RegExp(r'\s+'), ' ')
++      .replaceAll(cachedRe(r'\([^)]*\)|\[[^\]]*\]'), ' ')
++      .replaceAll(cachedRe(r'\b(?:feat|ft|prod|reprod|ft\.|feat\.)\b.*$', caseSensitive: false), ' ')
++      .replaceAll(cachedRe(r'\s+'), ' ')
+       .trim();
+ }
+ 
+@@ -149,13 +150,13 @@
+   }
+   return buffer
+       .toString()
+-      .replaceAll(RegExp(r'[*•]'), '')
+-      .replaceAll(RegExp(r'\s+'), ' ')
++      .replaceAll(cachedRe(r'[*•]'), '')
++      .replaceAll(cachedRe(r'\s+'), ' ')
+       .trim();
+ }
+ 
+ String leetKey(String title) =>
+-    compactKey(deleet(title)).replaceAllMapped(RegExp(r'(.)\1+'), (m) => m.group(1)!);
++    compactKey(deleet(title)).replaceAllMapped(cachedRe(r'(.)\1+'), (m) => m.group(1)!);
+ 
+ String coreKey(String title) => compactKey(coreTitle(title));
+ 
+@@ -197,10 +198,10 @@
+ /// Score used by the importer: 1 exact, 0.92 without "(Remix)" tails, 0.7 for
+ /// a containment match, and up to 0.8 * 0.86.. for a close spelling.
+ String importCore(String value) => value
+-    .replaceAll(RegExp(r'\([^)]*\)|\[[^\]]*\]'), ' ')
+-    .replaceAll(RegExp(r'\b(?:feat|ft)\.?\s.*$', caseSensitive: false), ' ')
+-    .replaceAll(RegExp(r'\s[-–—]\s.*(?:remaster|version|edit|mix).*$', caseSensitive: false), ' ')
+-    .replaceAll(RegExp(r'\s+'), ' ')
++    .replaceAll(cachedRe(r'\([^)]*\)|\[[^\]]*\]'), ' ')
++    .replaceAll(cachedRe(r'\b(?:feat|ft)\.?\s.*$', caseSensitive: false), ' ')
++    .replaceAll(cachedRe(r'\s[-–—]\s.*(?:remaster|version|edit|mix).*$', caseSensitive: false), ' ')
++    .replaceAll(cachedRe(r'\s+'), ' ')
+     .trim();
+ 
+ double importTitleScore(String want, String have) {
+@@ -220,7 +221,7 @@
+ }
+ 
+ double importArtistScore(String want, List<String> candidateArtists) {
+-  final splitter = RegExp(
++  final splitter = cachedRe(
+     r'\s*(?:,|;|&|×|\bfeat\.?|\bft\.?|\bx\b|\band\b|\bи\b)\s*',
+     caseSensitive: false,
+   );
+@@ -244,7 +245,7 @@
+   return 0;
+ }
+ 
+-final RegExp _variantRe = RegExp(
++final RegExp _variantRe = cachedRe(
+   r'remix|slowed|sped ?up|nightcore|karaoke|instrumental|cover|live|acoustic|8d|bass ?boost|reverb|ремикс|кавер|караоке',
+   caseSensitive: false,
+ );
+@@ -285,7 +286,7 @@
+   Future<Track?> find(CatalogService catalog, PlaylistImportItem item) async {
+     final key = '${looseKey(item.artist)}|${looseKey(item.title)}';
+     if (_cache.containsKey(key)) return _cache[key];
+-    final first = item.artist.split(RegExp(r'\s*(?:,|;|&)\s*')).first.trim();
++    final first = item.artist.split(cachedRe(r'\s*(?:,|;|&)\s*')).first.trim();
+     final core = importCore(item.title).isNotEmpty ? importCore(item.title) : item.title;
+     Track? found;
+     for (final query in <String>['$first $core'.trim(), core]) {
+diff -ru lumino/flutter_app/lib/core/importer.dart lumino_opt/flutter_app/lib/core/importer.dart
+--- lumino/flutter_app/lib/core/importer.dart	2026-10-20 06:16:28.000000000 +0000
++++ lumino_opt/flutter_app/lib/core/importer.dart	2026-10-20 13:24:43.623648715 +0000
+@@ -1,12 +1,13 @@
+ import 'dart:convert';
+ 
+ import 'models.dart';
++import 'utils.dart';
+ 
+ /// Parser for playlist exports from other music services: CSV / TSV
+ /// (Exportify, TuneMyMusic, Soundiiz, Apple Music, Yandex Music), Spotify
+ /// account JSON, M3U / M3U8 and plain "Artist - Title" text.
+ class ImportParser {
+-  static final RegExp likedRe = RegExp(
++  static final RegExp likedRe = cachedRe(
+     r'liked|favou?rite|loved|saved tracks|your ?library|избранн|понрав|нравит|любим|мне нравится',
+     caseSensitive: false,
+   );
+@@ -26,13 +27,13 @@
+   };
+ 
+   static String clean(Object? value) =>
+-      (value ?? '').toString().replaceAll(RegExp(r'\s+'), ' ').trim();
++      (value ?? '').toString().replaceAll(cachedRe(r'\s+'), ' ').trim();
+ 
+   static String fold(Object? value) => clean(value).toLowerCase();
+ 
+   static String baseName(String? fileName) {
+-    var name = clean((fileName ?? '').split(RegExp(r'[\\/]')).last);
+-    name = name.replaceFirst(RegExp(r'\.[a-z0-9]{1,6}$', caseSensitive: false), '');
++    var name = clean((fileName ?? '').split(cachedRe(r'[\\/]')).last);
++    name = name.replaceFirst(cachedRe(r'\.[a-z0-9]{1,6}$', caseSensitive: false), '');
+     return name.isEmpty ? 'Imported playlist' : name;
+   }
+ 
+@@ -40,15 +41,15 @@
+     final source = text.replaceFirst('\ufeff', '');
+     final trimmed = source.trimLeft();
+     List<PlaylistImportList> lists;
+-    if (RegExp(r'\.json$', caseSensitive: false).hasMatch(fileName) ||
++    if (cachedRe(r'\.json$', caseSensitive: false).hasMatch(fileName) ||
+         trimmed.startsWith('{') ||
+         trimmed.startsWith('[')) {
+       lists = _fromJson(source, fileName);
+-    } else if (RegExp(r'\.(csv|tsv)$', caseSensitive: false).hasMatch(fileName)) {
++    } else if (cachedRe(r'\.(csv|tsv)$', caseSensitive: false).hasMatch(fileName)) {
+       lists = _fromCsv(source, fileName);
+-    } else if (RegExp(r'\.(m3u8?|txt)$', caseSensitive: false).hasMatch(fileName) || fileName.isEmpty) {
+-      final firstLine = source.split(RegExp(r'\r?\n')).first;
+-      final csv = RegExp(r'[,;\t]').hasMatch(firstLine) ? _fromCsv(source, fileName) : <PlaylistImportList>[];
++    } else if (cachedRe(r'\.(m3u8?|txt)$', caseSensitive: false).hasMatch(fileName) || fileName.isEmpty) {
++      final firstLine = source.split(cachedRe(r'\r?\n')).first;
++      final csv = cachedRe(r'[,;\t]').hasMatch(firstLine) ? _fromCsv(source, fileName) : <PlaylistImportList>[];
+       lists = csv.isNotEmpty ? csv : _fromText(source, fileName);
+     } else {
+       final csv = _fromCsv(source, fileName);
+@@ -77,7 +78,7 @@
+   // ------------------------------------------------------------------ CSV
+ 
+   static String _detectDelimiter(String head) {
+-    final line = head.split(RegExp(r'\r?\n')).firstWhere((l) => l.trim().isNotEmpty, orElse: () => '');
++    final line = head.split(cachedRe(r'\r?\n')).firstWhere((l) => l.trim().isNotEmpty, orElse: () => '');
+     var best = ',';
+     var bestCount = 0;
+     for (final delimiter in [',', ';', '\t']) {
+@@ -141,7 +142,7 @@
+     final rows = parseCsv(text);
+     if (rows.length < 2) return [];
+     final header = rows.first
+-        .map((value) => fold(value).replaceFirst(RegExp(r'^\ufeff'), ''))
++        .map((value) => fold(value).replaceFirst(cachedRe(r'^\ufeff'), ''))
+         .toList();
+     final titleIndex = _pickColumn(header, headers['title']!);
+     final artistIndex = _pickColumn(header, headers['artist']!);
+@@ -154,7 +155,7 @@
+       final title = clean(titleIndex < row.length ? row[titleIndex] : '');
+       if (title.isEmpty) continue;
+       final artist = artistIndex >= 0 && artistIndex < row.length
+-          ? clean(row[artistIndex].replaceAll(RegExp(r'\s*;\s*'), ', '))
++          ? clean(row[artistIndex].replaceAll(cachedRe(r'\s*;\s*'), ', '))
+           : '';
+       final type = typeIndex >= 0 && typeIndex < row.length ? fold(row[typeIndex]) : '';
+       var name = playlistIndex >= 0 && playlistIndex < row.length ? clean(row[playlistIndex]) : '';
+@@ -267,7 +268,7 @@
+     var out = found.entries
+         .map((entry) => PlaylistImportList(name: entry.key, kind: 'playlist', items: entry.value))
+         .toList();
+-    if (RegExp(r'yourlibrary', caseSensitive: false).hasMatch(fileName) && out.isNotEmpty) {
++    if (cachedRe(r'yourlibrary', caseSensitive: false).hasMatch(fileName) && out.isNotEmpty) {
+       out = out.map((list) => PlaylistImportList(name: 'Liked Songs', kind: 'liked', items: list.items)).toList();
+     }
+     return out;
+@@ -277,9 +278,9 @@
+ 
+   static ({String artist, String title}) splitArtistTitle(String line) {
+     var value = clean(line);
+-    value = value.replaceFirst(RegExp(r'^\s*(?:\d{1,4}\s*[.)\]]|[-*•]|#\d+)\s+'), '');
+-    var match = RegExp(r'^(.+?)\s+[-–—−]\s+(.+)$').firstMatch(value);
+-    match ??= RegExp(r'^(.+?)\s*[–—]\s*(.+)$').firstMatch(value);
++    value = value.replaceFirst(cachedRe(r'^\s*(?:\d{1,4}\s*[.)\]]|[-*•]|#\d+)\s+'), '');
++    var match = cachedRe(r'^(.+?)\s+[-–—−]\s+(.+)$').firstMatch(value);
++    match ??= cachedRe(r'^(.+?)\s*[–—]\s*(.+)$').firstMatch(value);
+     if (match != null) {
+       return (artist: clean(match.group(1)), title: clean(match.group(2)));
+     }
+@@ -287,13 +288,13 @@
+   }
+ 
+   static List<PlaylistImportList> _fromText(String text, String fileName) {
+-    final lines = text.replaceFirst('\ufeff', '').split(RegExp(r'\r?\n'));
++    final lines = text.replaceFirst('\ufeff', '').split(cachedRe(r'\r?\n'));
+     final items = <PlaylistImportItem>[];
+-    final isM3u = lines.isNotEmpty && RegExp(r'^#EXTM3U', caseSensitive: false).hasMatch(lines.first) ||
+-        lines.any((line) => RegExp(r'^#EXTINF', caseSensitive: false).hasMatch(line));
++    final isM3u = lines.isNotEmpty && cachedRe(r'^#EXTM3U', caseSensitive: false).hasMatch(lines.first) ||
++        lines.any((line) => cachedRe(r'^#EXTINF', caseSensitive: false).hasMatch(line));
+     if (isM3u) {
+       for (final line in lines) {
+-        final match = RegExp(r'^#EXTINF:[^,]*,(.*)$', caseSensitive: false).firstMatch(line);
++        final match = cachedRe(r'^#EXTINF:[^,]*,(.*)$', caseSensitive: false).firstMatch(line);
+         if (match == null) continue;
+         final split = splitArtistTitle(match.group(1) ?? '');
+         if (split.title.isNotEmpty) {
+@@ -303,7 +304,7 @@
+       if (items.isEmpty) {
+         for (final line in lines) {
+           if (line.trim().isEmpty || line.startsWith('#')) continue;
+-          final file = line.split(RegExp(r'[\\/]')).last.replaceFirst(RegExp(r'\.[a-z0-9]{2,5}$', caseSensitive: false), '');
++          final file = line.split(cachedRe(r'[\\/]')).last.replaceFirst(cachedRe(r'\.[a-z0-9]{2,5}$', caseSensitive: false), '');
+           final split = splitArtistTitle(file);
+           if (split.title.isNotEmpty) {
+             items.add(PlaylistImportItem(title: split.title, artist: split.artist));
+@@ -312,7 +313,7 @@
+       }
+     } else {
+       for (final line in lines) {
+-        if (clean(line).isEmpty || RegExp(r'^\s*(#|//)').hasMatch(line)) continue;
++        if (clean(line).isEmpty || cachedRe(r'^\s*(#|//)').hasMatch(line)) continue;
+         final split = splitArtistTitle(line);
+         if (split.title.isNotEmpty && split.title.length < 220) {
+           items.add(PlaylistImportItem(title: split.title, artist: split.artist));
+diff -ru lumino/flutter_app/lib/core/meta_service.dart lumino_opt/flutter_app/lib/core/meta_service.dart
+--- lumino/flutter_app/lib/core/meta_service.dart	2026-10-20 06:16:28.000000000 +0000
++++ lumino_opt/flutter_app/lib/core/meta_service.dart	2026-10-20 13:25:07.518993101 +0000
+@@ -1,5 +1,7 @@
+ import 'dart:async';
+ import 'dart:convert';
++import 'dart:isolate';
++import 'dart:typed_data';
+ import 'dart:math' as math;
+ 
+ import 'package:http/http.dart' as http;
+@@ -453,54 +455,9 @@
+               const Duration(seconds: 9),
+             );
+         if (response.statusCode != 200) return null;
+-        final decoded = img.decodeImage(response.bodyBytes);
+-        if (decoded == null) return null;
+-        final small = img.copyResize(decoded, width: 24, height: 24);
+-        var sumR = 0.0, sumG = 0.0, sumB = 0.0, count = 0.0;
+-        final buckets = List.generate(12, (_) => [0.0, 0.0, 0.0, 0.0]);
+-        for (final pixel in small) {
+-          final r = pixel.r.toDouble(), g = pixel.g.toDouble(), b = pixel.b.toDouble();
+-          sumR += r;
+-          sumG += g;
+-          sumB += b;
+-          count++;
+-          final maxV = math.max(r, math.max(g, b));
+-          final minV = math.min(r, math.min(g, b));
+-          final delta = maxV - minV;
+-          if (delta == 0) continue;
+-          final lightness = (maxV + minV) / 510;
+-          final saturation = delta / (255 - (maxV + minV - 255).abs() + 1);
+-          double hue;
+-          if (maxV == r) {
+-            hue = (g - b) / delta + (g < b ? 6 : 0);
+-          } else if (maxV == g) {
+-            hue = (b - r) / delta + 2;
+-          } else {
+-            hue = (r - g) / delta + 4;
+-          }
+-          final bucket = (((hue * 60) % 360) / 30).floor();
+-          final weight = saturation * (1 - (lightness - 0.5).abs() * 1.6) * math.max(0.1, 1 - (lightness - 0.5).abs());
+-          if (weight <= 0.02) continue;
+-          final entry = buckets[clampInt(bucket, 0, 11)];
+-          entry[0] += weight;
+-          entry[1] += r * weight;
+-          entry[2] += g * weight;
+-          entry[3] += b * weight;
+-        }
+-        buckets.sort((a, b) => b[0].compareTo(a[0]));
+-        final best = buckets.first;
+-        double r, g, b;
+-        if (best[0] > 0.8) {
+-          r = best[1] / best[0];
+-          g = best[2] / best[0];
+-          b = best[3] / best[0];
+-        } else {
+-          r = sumR / math.max(1, count);
+-          g = sumG / math.max(1, count);
+-          b = sumB / math.max(1, count);
+-        }
+-        int channel(double v) => v.round().clamp(0, 255).toInt();
+-        return (channel(r) << 16) | (channel(g) << 8) | channel(b);
++        // Capture only the bytes: the isolate message must not carry the Response object.
++        final bytes = response.bodyBytes;
++        return await Isolate.run(() => _dominantColorOf(bytes));
+       } catch (_) {
+         return null;
+       }
+@@ -523,12 +480,65 @@
+   }
+ 
+   static String _stripHtml(String value) => value
+-      .replaceAll(RegExp(r'<[^>]*>'), ' ')
++      .replaceAll(cachedRe(r'<[^>]*>'), ' ')
+       .replaceAll('&amp;', '&')
+       .replaceAll('&quot;', '"')
+       .replaceAll('&#x27;', "'")
+       .replaceAll('&lt;', '<')
+       .replaceAll('&gt;', '>')
+-      .replaceAll(RegExp(r'\s+'), ' ')
++      .replaceAll(cachedRe(r'\s+'), ' ')
+       .trim();
+ }
++
++/// Samples the dominant colour of an image. Runs in a background isolate because
++/// decoding a full-size cover on the UI thread drops frames.
++int? _dominantColorOf(Uint8List bytes) {
++  final decoded = img.decodeImage(bytes);
++  if (decoded == null) return null;
++  final small = img.copyResize(decoded, width: 24, height: 24);
++  var sumR = 0.0, sumG = 0.0, sumB = 0.0, count = 0.0;
++  final buckets = List.generate(12, (_) => [0.0, 0.0, 0.0, 0.0]);
++  for (final pixel in small) {
++    final r = pixel.r.toDouble(), g = pixel.g.toDouble(), b = pixel.b.toDouble();
++    sumR += r;
++    sumG += g;
++    sumB += b;
++    count++;
++    final maxV = math.max(r, math.max(g, b));
++    final minV = math.min(r, math.min(g, b));
++    final delta = maxV - minV;
++    if (delta == 0) continue;
++    final lightness = (maxV + minV) / 510;
++    final saturation = delta / (255 - (maxV + minV - 255).abs() + 1);
++    double hue;
++    if (maxV == r) {
++      hue = (g - b) / delta + (g < b ? 6 : 0);
++    } else if (maxV == g) {
++      hue = (b - r) / delta + 2;
++    } else {
++      hue = (r - g) / delta + 4;
++    }
++    final bucket = (((hue * 60) % 360) / 30).floor();
++    final weight = saturation * (1 - (lightness - 0.5).abs() * 1.6) * math.max(0.1, 1 - (lightness - 0.5).abs());
++    if (weight <= 0.02) continue;
++    final entry = buckets[clampInt(bucket, 0, 11)];
++    entry[0] += weight;
++    entry[1] += r * weight;
++    entry[2] += g * weight;
++    entry[3] += b * weight;
++  }
++  buckets.sort((a, b) => b[0].compareTo(a[0]));
++  final best = buckets.first;
++  double r, g, b;
++  if (best[0] > 0.8) {
++    r = best[1] / best[0];
++    g = best[2] / best[0];
++    b = best[3] / best[0];
++  } else {
++    r = sumR / math.max(1, count);
++    g = sumG / math.max(1, count);
++    b = sumB / math.max(1, count);
++  }
++  int channel(double v) => v.round().clamp(0, 255).toInt();
++  return (channel(r) << 16) | (channel(g) << 8) | channel(b);
++}
+diff -ru lumino/flutter_app/lib/core/models.dart lumino_opt/flutter_app/lib/core/models.dart
+--- lumino/flutter_app/lib/core/models.dart	2026-10-20 06:16:28.000000000 +0000
++++ lumino_opt/flutter_app/lib/core/models.dart	2026-10-20 13:24:43.618999640 +0000
+@@ -76,12 +76,12 @@
+       credits.addAll(splitCredits(item));
+     }
+ 
+-    final feat = RegExp(
++    final feat = cachedRe(
+       r'[\(\[]\s*(?:feat\.?|ft\.?|featuring|при уч\.?)\s+([^\)\]]+)[\)\]]',
+       caseSensitive: false,
+     ).firstMatch(title);
+     if (feat != null) {
+-      title = title.replaceFirst(feat.group(0)!, '').replaceAll(RegExp(r'\s{2,}'), ' ').trim();
++      title = title.replaceFirst(feat.group(0)!, '').replaceAll(cachedRe(r'\s{2,}'), ' ').trim();
+       credits.addAll(splitCredits(feat.group(1)!));
+     }
+ 
+@@ -109,7 +109,7 @@
+       coverSource: asString(raw['coverSource']),
+       duration: asInt(raw['duration']),
+       explicit: asBool(raw['explicit']) ||
+-          RegExp(r'\bexplicit\b|\[e\]', caseSensitive: false).hasMatch(title),
++          cachedRe(r'\bexplicit\b|\[e\]', caseSensitive: false).hasMatch(title),
+       releaseType: asString(raw['releaseType']),
+       source: asString(raw['source']),
+     );
+@@ -162,9 +162,9 @@
+ 
+ String classifyRelease(String title, String album, [int count = 0]) {
+   final text = '${title.toLowerCase()} ${album.toLowerCase()}';
+-  if (RegExp(r'\b(ep|мини[- ]?альбом|mini[- ]?album)\b').hasMatch(text)) return 'ep';
+-  if (RegExp(r'\b(single|сингл)\b').hasMatch(text)) return 'single';
+-  if (RegExp(r'\b(album|альбом|lp|long play)\b').hasMatch(text)) return 'album';
++  if (cachedRe(r'\b(ep|мини[- ]?альбом|mini[- ]?album)\b').hasMatch(text)) return 'ep';
++  if (cachedRe(r'\b(single|сингл)\b').hasMatch(text)) return 'single';
++  if (cachedRe(r'\b(album|альбом|lp|long play)\b').hasMatch(text)) return 'album';
+   if (count == 1) return 'single';
+   if (count >= 4 && count <= 7) return 'ep';
+   return '';
+diff -ru lumino/flutter_app/lib/core/utils.dart lumino_opt/flutter_app/lib/core/utils.dart
+--- lumino/flutter_app/lib/core/utils.dart	2026-10-20 06:16:28.000000000 +0000
++++ lumino_opt/flutter_app/lib/core/utils.dart	2026-10-20 13:24:43.622563499 +0000
+@@ -4,7 +4,7 @@
+ /// Electron renderer so saved data and behaviour stay compatible.
+ 
+ String norm(Object? value) =>
+-    (value ?? '').toString().toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
++    (value ?? '').toString().toLowerCase().replaceAll(cachedRe(r'\s+'), ' ').trim();
+ 
+ const Map<String, String> _diacritics = {
+   'à': 'a', 'á': 'a', 'â': 'a', 'ã': 'a', 'ä': 'a', 'å': 'a', 'ā': 'a', 'ă': 'a', 'ą': 'a',
+@@ -37,14 +37,14 @@
+ /// doubled letters are ignored ("Kai Angel" == "KAI ANGEL" == "kaiangel").
+ String looseKey(Object? value) {
+   var text = _foldDiacritics((value ?? '').toString().toLowerCase());
+-  text = text.replaceAll(RegExp(r'[^a-z0-9а-яё]'), '');
+-  return text.replaceAllMapped(RegExp(r'(.)\1+'), (m) => m.group(1)!);
++  text = text.replaceAll(cachedRe(r'[^a-z0-9а-яё]'), '');
++  return text.replaceAllMapped(cachedRe(r'(.)\1+'), (m) => m.group(1)!);
+ }
+ 
+ /// Compact key without doubled-letter collapsing, used by the importer.
+ String compactKey(Object? value) {
+   var text = _foldDiacritics((value ?? '').toString().toLowerCase());
+-  return text.replaceAll(RegExp(r'[^a-z0-9а-яё]'), '');
++  return text.replaceAll(cachedRe(r'[^a-z0-9а-яё]'), '');
+ }
+ 
+ const Map<String, String> displayNames = {
+@@ -70,11 +70,11 @@
+   final n = (value ?? 0).toDouble();
+   if (n >= 1000000) {
+     final text = (n / 1000000).toStringAsFixed(2);
+-    return '${text.replaceFirst(RegExp(r'\.?0+$'), '')}M';
++    return '${text.replaceFirst(cachedRe(r'\.?0+$'), '')}M';
+   }
+   if (n >= 1000) {
+     final text = (n / 1000).toStringAsFixed(1);
+-    return '${text.replaceFirst(RegExp(r'\.0$'), '')}K';
++    return '${text.replaceFirst(cachedRe(r'\.0$'), '')}K';
+   }
+   return n.toInt().toString();
+ }
+@@ -158,7 +158,7 @@
+ }
+ 
+ String safeFileName(String value) =>
+-    value.replaceAll(RegExp(r'[\\/:*?"<>|]'), '').trim();
++    value.replaceAll(cachedRe(r'[\\/:*?"<>|]'), '').trim();
+ 
+ String formatDb(num gain) {
+   final rounded = (gain * 2).round() / 2;
+@@ -170,8 +170,20 @@
+ 
+ List<String> splitCredits(String value) {
+   return value
+-      .split(RegExp(r'\s*(?:,|;|&|×|\bfeat\.?\s|\bft\.?\s|\bfeaturing\b)\s*', caseSensitive: false))
++      .split(cachedRe(r'\s*(?:,|;|&|×|\bfeat\.?\s|\bft\.?\s|\bfeaturing\b)\s*', caseSensitive: false))
+       .map((s) => s.trim())
+       .where((s) => s.isNotEmpty)
+       .toList();
+ }
++
++final Map<String, RegExp> _regexCache = {};
++
++/// Compiles each pattern once. Helpers such as [norm] and [looseKey] run inside
++/// sorts and per-track loops; compiling a RegExp on every call made the UI lag.
++RegExp cachedRe(String pattern, {bool caseSensitive = true, bool unicode = false}) {
++  final key = '${caseSensitive ? 1 : 0}${unicode ? 1 : 0}$pattern';
++  return _regexCache.putIfAbsent(
++    key,
++    () => RegExp(pattern, caseSensitive: caseSensitive, unicode: unicode),
++  );
++}
+diff -ru lumino/flutter_app/lib/ui/design.dart lumino_opt/flutter_app/lib/ui/design.dart
+--- lumino/flutter_app/lib/ui/design.dart	2026-10-20 06:16:28.000000000 +0000
++++ lumino_opt/flutter_app/lib/ui/design.dart	2026-10-20 13:24:54.895764166 +0000
+@@ -1,5 +1,6 @@
+ import 'dart:async';
+ import 'dart:convert';
++import 'dart:isolate';
+ import 'dart:math' as math;
+ import 'dart:typed_data';
+ import 'dart:ui' as ui;
+@@ -48,17 +49,13 @@
+   bool updateShouldNotify(ThemeScope oldWidget) => light != oldWidget.light || black != oldWidget.black;
+ }
+ 
+-const List<double> _invertMatrix = [
+-  -1, 0, 0, 0, 255,
+-  0, -1, 0, 0, 255,
+-  0, 0, -1, 0, 255,
+-  0, 0, 0, 1, 0,
+-];
+-
+-const List<double> _hue180Matrix = [
+-  -0.574, 1.430, 0.144, 0, 0,
+-  0.426, 0.430, 0.144, 0, 0,
+-  0.426, 1.430, -0.856, 0, 0,
++/// `invert(1) hue-rotate(180deg)` from the CSS light theme, folded into one
++/// colour matrix. The old version stacked two full-window ColorFiltered layers,
++/// which cost two offscreen passes on every frame.
++const List<double> _invertHueMatrix = [
++  0.574, -1.430, -0.144, 0, 255,
++  -0.426, -0.430, -0.144, 0, 255,
++  -0.426, -1.430, 0.856, 0, 255,
+   0, 0, 0, 1, 0,
+ ];
+ 
+@@ -70,11 +67,8 @@
+   @override
+   Widget build(BuildContext context) {
+     return ColorFiltered(
+-      colorFilter: const ColorFilter.matrix(_hue180Matrix),
+-      child: ColorFiltered(
+-        colorFilter: const ColorFilter.matrix(_invertMatrix),
+-        child: child,
+-      ),
++      colorFilter: const ColorFilter.matrix(_invertHueMatrix),
++      child: child,
+     );
+   }
+ }
+@@ -293,7 +287,7 @@
+     required this.child,
+     this.radius = 12,
+     this.dark = false,
+-    this.blur = 24,
++    this.blur = 0, // BackdropFilter re-blurs every frame; only opt in when needed
+     this.padding = EdgeInsets.zero,
+     this.borderColor,
+     this.shadows,
+@@ -401,12 +395,21 @@
+ // Images, covers, avatars
+ // ---------------------------------------------------------------------------
+ 
++final Map<String, Uint8List> _dataUrlCache = {};
++
++/// The same data URL used to be base64-decoded on every build. Returning the
++/// identical Uint8List lets Flutter's image cache recognise it and skip decoding.
+ Uint8List? _decodeDataUrl(String value) {
++  final cached = _dataUrlCache[value];
++  if (cached != null) return cached;
+   if (!value.startsWith('data:image/')) return null;
+   final comma = value.indexOf(',');
+   if (comma < 0) return null;
+   try {
+-    return base64Decode(value.substring(comma + 1));
++    final bytes = base64Decode(value.substring(comma + 1));
++    if (_dataUrlCache.length > 300) _dataUrlCache.clear();
++    _dataUrlCache[value] = bytes;
++    return bytes;
+   } catch (_) {
+     return null;
+   }
+@@ -2067,18 +2070,11 @@
+ // File helpers
+ // ---------------------------------------------------------------------------
+ 
+-Future<String> pickImageAsDataUrl({int size = 256, double quality = 88}) async {
+-  final result = await FilePicker.platform.pickFiles(
+-    type: FileType.custom,
+-    allowedExtensions: const ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'],
+-    withData: true,
+-  );
+-  final file = result?.files.firstOrNull;
+-  if (file == null) return '';
+-  final bytes = file.bytes;
+-  if (bytes == null) return '';
++/// Decoding and re-encoding a photo takes long enough to freeze the UI, so it
++/// runs in a background isolate. Returns empty bytes when the image is unreadable.
++Uint8List _squareJpeg(Uint8List bytes, int size, int quality) {
+   final decoded = img.decodeImage(bytes);
+-  if (decoded == null) return '';
++  if (decoded == null) return Uint8List(0);
+   final side = math.min(decoded.width, decoded.height);
+   final cropped = img.copyCrop(
+     decoded,
+@@ -2088,7 +2084,21 @@
+     height: side,
+   );
+   final resized = img.copyResize(cropped, width: size, height: size, interpolation: img.Interpolation.average);
+-  final encoded = img.encodeJpg(resized, quality: quality.toInt());
++  return Uint8List.fromList(img.encodeJpg(resized, quality: quality));
++}
++
++Future<String> pickImageAsDataUrl({int size = 256, double quality = 88}) async {
++  final result = await FilePicker.platform.pickFiles(
++    type: FileType.custom,
++    allowedExtensions: const ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'],
++    withData: true,
++  );
++  final file = result?.files.firstOrNull;
++  if (file == null) return '';
++  final bytes = file.bytes;
++  if (bytes == null) return '';
++  final encoded = await Isolate.run(() => _squareJpeg(bytes, size, quality.toInt()));
++  if (encoded.isEmpty) return '';
+   return 'data:image/jpeg;base64,${base64Encode(encoded)}';
+ }
+ 
+diff -ru lumino/flutter_app/lib/ui/pages/artist.dart lumino_opt/flutter_app/lib/ui/pages/artist.dart
+--- lumino/flutter_app/lib/ui/pages/artist.dart	2026-10-20 06:16:28.000000000 +0000
++++ lumino_opt/flutter_app/lib/ui/pages/artist.dart	2026-10-20 13:24:43.621778845 +0000
+@@ -298,7 +298,7 @@
+       return const EmptyState(
+           text: 'This mix is no longer available. Go back to Home and open it again.');
+     }
+-    final match = RegExp(r'mix(\d+)').firstMatch(listKey);
++    final match = cachedRe(r'mix(\d+)').firstMatch(listKey);
+     final index = match == null ? 0 : int.parse(match.group(1)!);
+     final title = 'Daily Mix ${index + 1}';
+     final lead = tracks.where((t) => t.cover.isNotEmpty).firstOrNull ?? tracks.first;
+@@ -421,7 +421,7 @@
+   Widget build(BuildContext context) {
+     final state = widget.state;
+     final artist = _release.artistName.isNotEmpty ? _release.artistName : widget.arg.artist;
+-    final year = RegExp(r'\d{4}').firstMatch(_release.year)?.group(0) ?? '';
++    final year = cachedRe(r'\d{4}').firstMatch(_release.year)?.group(0) ?? '';
+     final cover = _release.cover;
+     final type = _release.kindLabel.toUpperCase();
+ 
+diff -ru lumino/flutter_app/lib/ui/pages/search.dart lumino_opt/flutter_app/lib/ui/pages/search.dart
+--- lumino/flutter_app/lib/ui/pages/search.dart	2026-10-20 06:16:28.000000000 +0000
++++ lumino_opt/flutter_app/lib/ui/pages/search.dart	2026-10-20 13:24:43.621072624 +0000
+@@ -142,10 +142,10 @@
+     if (!mounted || token != _queryToken) return;
+     final unique = <String, Track>{};
+     final semantic = <String, String>{};
+-    String normPart(String value) => norm(value).replaceAll(RegExp(r'[^\p{L}\p{N}]', unicode: true), '');
++    String normPart(String value) => norm(value).replaceAll(cachedRe(r'[^\p{L}\p{N}]', unicode: true), '');
+     for (final raw in [...local, ...remote.map(_withoutCover)]) {
+       final track = state.registerTrack(raw);
+-      final artist = track.artists.where((a) => !RegExp(r'unknown artist|неизвестный исполнитель', caseSensitive: false).hasMatch(a)).firstOrNull ?? '';
++      final artist = track.artists.where((a) => !cachedRe(r'unknown artist|неизвестный исполнитель', caseSensitive: false).hasMatch(a)).firstOrNull ?? '';
+       final semanticKey = '${normPart(artist)}|${normPart(track.title)}';
+       final existingId = semantic[semanticKey];
+       if (existingId != null && unique.containsKey(existingId)) {
+diff -ru lumino/flutter_app/lib/ui/shell.dart lumino_opt/flutter_app/lib/ui/shell.dart
+--- lumino/flutter_app/lib/ui/shell.dart	2026-10-20 06:16:28.000000000 +0000
++++ lumino_opt/flutter_app/lib/ui/shell.dart	2026-10-20 13:24:43.636183884 +0000
+@@ -217,7 +217,7 @@
+   @override
+   Widget build(BuildContext context) {
+     return Stack(children: [
+-      Positioned.fill(child: _Ambient(black: black)),
++      Positioned.fill(child: RepaintBoundary(child: _Ambient(black: black))),
+       Positioned.fill(
+         child: Padding(
+           padding: const EdgeInsets.all(8),

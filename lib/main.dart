@@ -1,0 +1,589 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:ui' show PlatformDispatcher;
+
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+import 'package:media_kit/media_kit.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:tray_manager/tray_manager.dart';
+import 'package:window_manager/window_manager.dart';
+
+import 'core/app_log.dart';
+import 'core/app_state.dart';
+import 'core/audio_service.dart';
+import 'core/catalog_service.dart';
+import 'core/lyrics_service.dart';
+import 'core/meta_service.dart';
+import 'core/node_service.dart';
+import 'core/auth_service.dart';
+import 'core/persistence.dart';
+import 'core/server_status.dart';
+import 'ui/auth.dart';
+import 'ui/design.dart';
+import 'ui/server_unavailable.dart';
+import 'ui/shell.dart';
+import 'ui/window_corners.dart';
+
+final bool _isDesktop =
+    !kIsWeb && (Platform.isWindows || Platform.isMacOS || Platform.isLinux);
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Route every uncaught error into the log file, including ones that happen
+  // before the UI is up.
+  FlutterError.onError = (details) {
+    AppLog.instance.log(LogLevel.error, 'flutter', details.exceptionAsString(),
+        stack: details.stack);
+    FlutterError.presentError(details);
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    AppLog.instance.log(LogLevel.error, 'app', 'uncaught error',
+        error: error, stack: stack);
+    return true;
+  };
+
+  if (_isDesktop) await windowManager.ensureInitialized();
+
+  const options = WindowOptions(
+    size: Size(1110, 715),
+    minimumSize: Size(900, 600),
+    center: true,
+    backgroundColor: Colors.transparent,
+    skipTaskbar: false,
+    title: 'Lumino',
+    titleBarStyle: TitleBarStyle.hidden,
+  );
+  // Each platform call is guarded separately: a single unsupported call must
+  // not prevent the window from being shown.
+  Future<void> attempt(String label, Future<void> Function() call) async {
+    try {
+      await call();
+    } catch (error) {
+      debugPrint('$label failed: $error');
+    }
+  }
+
+  if (_isDesktop) {
+    windowManager.waitUntilReadyToShow(options, () async {
+      await attempt('setAsFrameless', () => windowManager.setAsFrameless());
+      await attempt('setBackgroundColor',
+          () => windowManager.setBackgroundColor(Colors.transparent));
+      await attempt('isMaximized', () async {
+        WindowCorners.square.value = await windowManager.isMaximized() ||
+            await windowManager.isFullScreen();
+      });
+      await attempt('setTitle', () => windowManager.setTitle('Lumino'));
+      await attempt(
+          'setPreventClose', () => windowManager.setPreventClose(true));
+      await attempt('show', () => windowManager.show());
+      await attempt('focus', () => windowManager.focus());
+    });
+  }
+
+  MediaKit.ensureInitialized();
+
+  final persistence = Persistence();
+  await AppLog.instance.init(await persistence.ensureDir());
+  final windowListener = _AppWindowListener();
+  if (_isDesktop) windowManager.addListener(windowListener);
+
+  runApp(LuminoApp(persistence: persistence));
+
+  if (_isDesktop) unawaited(_startTray(() => _liveState, windowListener));
+}
+
+/// The player state of the signed-in account. Null while the account screens are shown.
+AppState? _liveState;
+
+/// Builds the player state. It is created only after a session exists,
+/// so it always loads the state of the right account.
+AppState _buildAppState(Persistence persistence,
+    {String? registeredDisplayName}) {
+  final node = NodeService(persistence);
+  final audio = AudioService();
+  final meta = MetaService(http.Client(), node: node);
+  final catalog = CatalogService(node);
+  final lyrics = LyricsService(node);
+  return AppState(
+    persistence: persistence,
+    node: node,
+    catalog: catalog,
+    meta: meta,
+    lyricsService: lyrics,
+    audio: audio,
+    registeredDisplayName: registeredDisplayName,
+  );
+}
+
+class LuminoApp extends StatelessWidget {
+  const LuminoApp({super.key, required this.persistence});
+  final Persistence persistence;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Lumino',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: kBg,
+        fontFamily: 'Segoe UI',
+        splashFactory: NoSplash.splashFactory,
+        highlightColor: Colors.transparent,
+        hoverColor: Colors.transparent,
+        focusColor: Colors.transparent,
+        textSelectionTheme: const TextSelectionThemeData(
+          cursorColor: Colors.white,
+          selectionColor: Color(0x59FFFFFF),
+          selectionHandleColor: Colors.white,
+        ),
+        tooltipTheme: TooltipThemeData(
+          decoration: BoxDecoration(
+            color: const Color(0xF01A1A1E),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0x1AFFFFFF)),
+          ),
+          textStyle: const TextStyle(color: Colors.white, fontSize: 12),
+          waitDuration: const Duration(milliseconds: 500),
+        ),
+      ),
+      scrollBehavior: const _LuminoScrollBehavior(),
+      builder: (context, child) =>
+          WindowCorners(child: child ?? const SizedBox.shrink()),
+      home: _RootView(persistence: persistence),
+    );
+  }
+}
+
+/// Decides what the user sees. A saved session goes straight to the player,
+/// otherwise the account screens are shown. While the server does not answer,
+/// the "server unavailable" page covers everything and the app keeps checking.
+class _RootView extends StatefulWidget {
+  const _RootView({required this.persistence});
+  final Persistence persistence;
+
+  @override
+  State<_RootView> createState() => _RootViewState();
+}
+
+class _RootViewState extends State<_RootView> {
+  final ServerStatus _status = ServerStatus();
+  late final AuthService _auth =
+      AuthService(status: _status, onToken: _saveToken);
+
+  AppState? _state;
+  bool _checking = true;
+  bool _showStartupSplash = true;
+  bool _showAuthSuccess = false;
+  bool _startupPending = false; // start-up stopped because the server was down
+  bool _retrying = false;
+  Timer? _healthTimer;
+  Timer? _startupTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _status.addListener(_onStatusChanged);
+    _startupTimer = Timer(const Duration(milliseconds: 2900), () {
+      if (mounted) setState(() => _showStartupSplash = false);
+    });
+    unawaited(_restore());
+  }
+
+  @override
+  void dispose() {
+    _healthTimer?.cancel();
+    _startupTimer?.cancel();
+    _status.removeListener(_onStatusChanged);
+    _auth.dispose();
+    _status.dispose();
+    super.dispose();
+  }
+
+  void _saveToken(String? token) {
+    final p = widget.persistence;
+    if (token == null) {
+      unawaited(p.clearSession());
+    } else {
+      unawaited(p.saveSession(token));
+    }
+  }
+
+  bool _unreachable(AuthException e) => e.offline || e.status >= 500;
+
+  void _onStatusChanged() {
+    if (_status.down) {
+      _healthTimer ??= Timer.periodic(
+          const Duration(seconds: 5), (_) => unawaited(_retry()));
+    } else {
+      _healthTimer?.cancel();
+      _healthTimer = null;
+      unawaited(widget.persistence.flush());
+      if (_startupPending) unawaited(_restore());
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _retry() async {
+    if (_retrying) return;
+    setState(() => _retrying = true);
+    try {
+      await _auth.ping();
+    } finally {
+      if (mounted) setState(() => _retrying = false);
+    }
+  }
+
+  Future<void> _restore() async {
+    _startupPending = false;
+    await widget.persistence.purgeLocalData();
+    final token = await widget.persistence.loadSession();
+    if (token == null) {
+      _showAccount();
+      return;
+    }
+    _auth.restore(token);
+    widget.persistence.onStateWritten = _auth.pushStateJson;
+    try {
+      final user = await _auth.me();
+      if (user == null) {
+        await _dropSession();
+        return;
+      }
+      await _loadRemote();
+      _enter();
+    } on AuthException catch (e) {
+      if (_unreachable(e)) {
+        _startupPending =
+            true; // the outage page is up; resume when the server answers
+      } else {
+        await _dropSession();
+      }
+    }
+  }
+
+  /// Called after login or email verification.
+  Future<void> _onAuthenticated() async {
+    widget.persistence.onStateWritten = _auth.pushStateJson;
+    try {
+      await _loadRemote();
+      if (!mounted) return;
+      _startupTimer?.cancel();
+      setState(() {
+        _showStartupSplash = false;
+        _showAuthSuccess = true;
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 850));
+      if (!mounted) return;
+      _enter();
+    } on AuthException catch (e) {
+      if (_unreachable(e)) {
+        _startupPending = true;
+      } else {
+        await _dropSession();
+      }
+    }
+  }
+
+  /// Loads the account state from the server. Throws AuthException if the server is unreachable.
+  Future<void> _loadRemote() async {
+    final remote = await _auth.fetchState();
+    widget.persistence.setInitialState(remote ?? <String, dynamic>{});
+  }
+
+  Future<void> _dropSession() async {
+    _auth.restore(null);
+    await widget.persistence.clearSession();
+    _showAccount();
+  }
+
+  void _showAccount() {
+    if (mounted) setState(() => _checking = false);
+  }
+
+  void _enter() {
+    _showAuthSuccess = false;
+    final state = _buildAppState(widget.persistence,
+        registeredDisplayName: _auth.displayName);
+    _liveState = state;
+    unawaited(state.init());
+    if (mounted) {
+      setState(() {
+        _state = state;
+        _checking = false;
+      });
+    }
+  }
+
+  /// Ends the session on this device. Unsent changes are dropped.
+  /// Not wired to a button yet.
+  Future<void> signOut() async {
+    final state = _state;
+    widget.persistence.discardPending();
+    await _auth.logout();
+    await widget.persistence.clearSession();
+    if (state != null) {
+      await state.audio.stop();
+      state.dispose();
+      state.node.dispose();
+    }
+    _liveState = null;
+    if (mounted) setState(() => _state = null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget content;
+    if (_checking) {
+      content = const _StartupLoading();
+    } else if (_showAuthSuccess) {
+      content = const _AuthSuccess();
+    } else if (_state == null) {
+      content = AuthGate(
+        auth: _auth,
+        onAuthenticated: () => unawaited(_onAuthenticated()),
+      );
+    } else {
+      content = LuminoShell(state: _state!, onSignOut: signOut);
+    }
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        content,
+        if (_showStartupSplash)
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onPanStart:
+                  _isDesktop ? (_) => windowManager.startDragging() : null,
+              child: const LuminoSplash(),
+            ),
+          ),
+        if (_status.down)
+          ServerUnavailablePage(
+              onRetry: () => unawaited(_retry()), retrying: _retrying),
+      ],
+    );
+  }
+}
+
+class _StartupLoading extends StatelessWidget {
+  const _StartupLoading();
+
+  @override
+  Widget build(BuildContext context) => const ColoredBox(
+        color: kBg,
+        child: Center(
+          child: SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Color(0x99FFFFFF),
+            ),
+          ),
+        ),
+      );
+}
+
+class _AuthSuccess extends StatelessWidget {
+  const _AuthSuccess();
+
+  @override
+  Widget build(BuildContext context) => const ColoredBox(
+        color: kBg,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              LIcon('check', size: 38, color: Color(0xFF9FE3A2)),
+              SizedBox(height: 16),
+              Text(
+                'Signed in successfully',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Opening your library…',
+                style: TextStyle(fontSize: 13, color: kMuted),
+              ),
+            ],
+          ),
+        ),
+      );
+}
+
+class _LuminoScrollBehavior extends MaterialScrollBehavior {
+  const _LuminoScrollBehavior();
+
+  @override
+  Widget buildScrollbar(
+          BuildContext context, Widget child, ScrollableDetails details) =>
+      child;
+
+  @override
+  Widget buildOverscrollIndicator(
+          BuildContext context, Widget child, ScrollableDetails details) =>
+      child;
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.trackpad,
+        PointerDeviceKind.stylus,
+      };
+}
+
+class _AppWindowListener extends WindowListener {
+  bool quitting = false;
+
+  @override
+  void onWindowMaximize() => WindowCorners.square.value = true;
+
+  @override
+  void onWindowUnmaximize() => WindowCorners.square.value = false;
+
+  @override
+  void onWindowEnterFullScreen() => WindowCorners.square.value = true;
+
+  @override
+  void onWindowLeaveFullScreen() => WindowCorners.square.value = false;
+
+  @override
+  void onWindowClose() async {
+    if (quitting) {
+      await _flushOnQuit();
+      await AppLog.instance.close();
+      await windowManager.destroy();
+      return;
+    }
+    try {
+      await windowManager.hide();
+    } catch (error) {
+      debugPrint('Could not hide the window: $error');
+    }
+  }
+}
+
+/// Sends unsent changes before the app exits (at most 3 s).
+Future<void> _flushOnQuit() async {
+  try {
+    await _liveState?.persistence.flush().timeout(const Duration(seconds: 3));
+  } catch (_) {}
+}
+
+Future<String> _materializeIcon(String asset) async {
+  final dir = await getApplicationSupportDirectory();
+  final name = asset.split('/').last;
+  final file = File('${dir.path}${Platform.pathSeparator}lumino-$name');
+  if (!await file.exists()) {
+    final data = await rootBundle.load(asset);
+    await file.writeAsBytes(data.buffer.asUint8List(), flush: true);
+  }
+  return file.path;
+}
+
+Future<void> _startTray(
+    AppState? Function() current, _AppWindowListener listener) async {
+  try {
+    final assetPath =
+        Platform.isWindows ? 'assets/icon.ico' : 'assets/icon.png';
+    final iconPath = await _materializeIcon(assetPath);
+    try {
+      await windowManager.setIcon(iconPath);
+    } catch (_) {}
+    // tray_manager resolves Flutter assets itself; an absolute support path
+    // would be prefixed with the asset directory a second time.
+    await trayManager.setIcon(assetPath);
+    await trayManager.setToolTip('Lumino');
+    final menu = Menu(items: [
+      MenuItem(key: 'show', label: 'Show Lumino'),
+      MenuItem.separator(),
+      MenuItem(key: 'toggle', label: 'Play / Pause'),
+      MenuItem(key: 'next', label: 'Next track'),
+      MenuItem.separator(),
+      MenuItem(key: 'quit', label: 'Quit Lumino'),
+    ]);
+    await trayManager.setContextMenu(menu);
+    trayManager.addListener(_TrayHandler(current, listener));
+  } catch (error) {
+    AppLog.instance.log(
+        LogLevel.warn, 'tray', 'Could not initialize the system tray',
+        error: error);
+    debugPrint('Tray unavailable: $error');
+    // Without a tray icon a hidden window could not be restored, so closing
+    // the window must quit the app instead.
+    try {
+      await windowManager.setPreventClose(false);
+    } catch (fallbackError) {
+      AppLog.instance.log(
+        LogLevel.warn,
+        'tray',
+        'Could not disable hide-on-close without a tray icon',
+        error: fallbackError,
+      );
+    }
+  }
+}
+
+class _TrayHandler with TrayListener {
+  _TrayHandler(this.current, this.listener);
+  final AppState? Function() current;
+  final _AppWindowListener listener;
+
+  @override
+  void onTrayIconMouseDown() {
+    unawaited(_showWindow());
+  }
+
+  @override
+  void onTrayIconRightMouseDown() {
+    unawaited(_showTrayMenu());
+  }
+
+  @override
+  void onTrayMenuItemClick(MenuItem menuItem) {
+    switch (menuItem.key) {
+      case 'show':
+        _showWindow();
+      case 'toggle':
+        final toggled = current();
+        if (toggled != null) unawaited(toggled.togglePlay());
+      case 'next':
+        final nexted = current();
+        if (nexted != null) unawaited(nexted.next());
+      case 'quit':
+        listener.quitting = true;
+        unawaited(_flushOnQuit()
+            .then((_) => AppLog.instance.close())
+            .then((_) => windowManager.destroy()));
+    }
+  }
+
+  Future<void> _showWindow() async {
+    try {
+      await windowManager.show();
+      await windowManager.focus();
+    } catch (error) {
+      AppLog.instance.log(
+          LogLevel.warn, 'tray', 'Could not restore the app window',
+          error: error);
+    }
+  }
+
+  Future<void> _showTrayMenu() async {
+    try {
+      await trayManager.popUpContextMenu();
+    } catch (error) {
+      AppLog.instance.log(LogLevel.warn, 'tray', 'Could not open the tray menu',
+          error: error);
+    }
+  }
+}
