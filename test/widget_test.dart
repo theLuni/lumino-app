@@ -2,6 +2,7 @@
 // platform channels, so these cover the model parsing and the utility
 // helpers everything else builds on.
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lumino/core/catalog_service.dart';
 import 'package:lumino/core/importer.dart';
 import 'package:lumino/core/models.dart';
 import 'package:lumino/core/utils.dart';
@@ -30,6 +31,34 @@ void main() {
 
     test('is deterministic across case', () {
       expect(looseKey('AuguSTIN'), looseKey('augustin'));
+    });
+  });
+
+  group('canonicalTrackTitle', () {
+    test('uses Kai Angel title aliases only in the matching albums', () {
+      expect(
+        canonicalTrackTitle('Kai Angel', 'naive', album: 'damage'),
+        'slave to the rhythm',
+      );
+      expect(
+        canonicalTrackTitle('Kai Angel', 'MM', album: 'MM'),
+        'MARILYN MANSON',
+      );
+      expect(
+        canonicalTrackTitle('Kai Angel', 'KYLIE', album: 'ANGEL MAY CRY'),
+        'KYLIE MINOGUE',
+      );
+    });
+
+    test('does not apply aliases to another artist or album', () {
+      expect(
+        canonicalTrackTitle('Other artist', 'naive', album: 'damage'),
+        'naive',
+      );
+      expect(
+        canonicalTrackTitle('Kai Angel', 'KYLIE', album: 'damage'),
+        'KYLIE',
+      );
     });
   });
 
@@ -86,6 +115,46 @@ void main() {
       expect(back.artists, ['a', 'b']);
       expect(back.duration, 12);
       expect(back.cover, 'c');
+    });
+  });
+
+  group('matchPlayableTrack', () {
+    test('does not substitute a different title by the same artist', () {
+      final wrong = Track(
+        id: 'wrong',
+        title: 'Madam 2',
+        artists: ['Kai Angel'],
+        album: 'Shh!',
+        src: 'audio://wrong',
+      );
+      expect(
+        matchPlayableTrack([wrong],
+            title: 'does it hurt?', artist: 'Kai Angel', album: 'Shh!'),
+        isNull,
+      );
+    });
+
+    test('prefers the exact album when matching duplicate tracks', () {
+      final otherAlbum = Track(
+        id: 'other',
+        title: 'naive',
+        artists: ['Kai Angel'],
+        album: 'other album',
+        src: 'audio://other',
+      );
+      final correct = Track(
+        id: 'correct',
+        title: 'naive',
+        artists: ['Kai Angel'],
+        album: 'damage',
+        src: 'audio://correct',
+      );
+      expect(
+        matchPlayableTrack([otherAlbum, correct],
+                title: 'naive', artist: 'Kai Angel', album: 'damage')
+            ?.id,
+        'correct',
+      );
     });
   });
 

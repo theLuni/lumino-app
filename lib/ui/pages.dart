@@ -4,6 +4,7 @@ import '../core/app_state.dart';
 import '../core/models.dart';
 import 'design.dart';
 import 'pages/artist.dart';
+import 'pages/chats.dart';
 import 'pages/home.dart';
 import 'pages/library.dart';
 import 'pages/profile.dart';
@@ -16,7 +17,9 @@ bool pageHasBack(String name) => const {
       'liked',
       'playlist',
       'release',
-      'profile'
+      'profile',
+      'user-profile',
+      'chats',
     }.contains(name);
 
 String pageIdentity(AppState state) {
@@ -24,6 +27,8 @@ String pageIdentity(AppState state) {
   if (arg is String) return '${state.pageName}:$arg';
   if (arg is ReleaseArg)
     return '${state.pageName}:${arg.release.name}:${arg.artist}';
+  if (arg is ChatShareArg) return 'chats:${arg.nonce}';
+  if (arg is Map) return '${state.pageName}:${arg['username'] ?? ''}';
   return state.pageName;
 }
 
@@ -33,6 +38,14 @@ Widget buildPage(AppState state, {required Future<void> Function() onSignOut}) {
       return HomePage(key: const ValueKey('home'), state: state);
     case 'search':
       return SearchPage(key: const ValueKey('search'), state: state);
+    case 'chats':
+      final shared =
+          state.pageArg is ChatShareArg ? state.pageArg as ChatShareArg : null;
+      return ChatsPage(
+        key: ValueKey('chats:${shared?.nonce ?? 'inbox'}'),
+        state: state,
+        sharedTrack: shared,
+      );
     case 'library':
       return LibraryPage(key: const ValueKey('library'), state: state);
     case 'settings':
@@ -42,6 +55,13 @@ Widget buildPage(AppState state, {required Future<void> Function() onSignOut}) {
       return LikedPage(key: const ValueKey('liked'), state: state);
     case 'profile':
       return ProfilePage(key: const ValueKey('profile'), state: state);
+    case 'user-profile':
+      final user = state.pageArg is Map
+          ? (state.pageArg as Map)
+              .map((key, value) => MapEntry(key.toString(), value))
+          : <String, dynamic>{};
+      return PublicUserProfilePage(
+          key: ValueKey('user-profile:${user['username'] ?? ''}'), user: user);
     case 'artist':
       final name = state.pageArg is String ? state.pageArg as String : '';
       return ArtistPage(

@@ -127,6 +127,34 @@ bool artistMatches(Track track, Set<String> keys) {
   return false;
 }
 
+Track? matchPlayableTrack(
+  Iterable<Track> tracks, {
+  required String title,
+  required String artist,
+  String album = '',
+}) {
+  final wantedTitle = compactKey(title);
+  final wantedAlbum = compactKey(album);
+  if (wantedTitle.isEmpty || artist.trim().isEmpty) return null;
+
+  Track? best;
+  var bestAlbumMatch = false;
+  for (final track in tracks) {
+    if (!track.playable ||
+        compactKey(track.title) != wantedTitle ||
+        !track.artists.any((credit) => sameArtist(credit, artist))) {
+      continue;
+    }
+    final albumMatch =
+        wantedAlbum.isNotEmpty && compactKey(track.album) == wantedAlbum;
+    if (best == null || (albumMatch && !bestAlbumMatch)) {
+      best = track;
+      bestAlbumMatch = albumMatch;
+    }
+  }
+  return best;
+}
+
 String coreTitle(String title) {
   return title
       .replaceAll(cachedRe(r'\([^)]*\)|\[[^\]]*\]'), ' ')

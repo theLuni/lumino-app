@@ -7,7 +7,84 @@ import '../../core/app_state.dart';
 import '../../core/models.dart';
 import '../../core/utils.dart';
 import '../design.dart';
-import 'home.dart';
+
+class PublicUserProfilePage extends StatelessWidget {
+  const PublicUserProfilePage({super.key, required this.user});
+  final Map<String, dynamic> user;
+
+  @override
+  Widget build(BuildContext context) {
+    final display =
+        (user['display_name'] ?? user['username'] ?? 'User').toString();
+    final username = (user['username'] ?? '').toString();
+    final avatar = (user['avatar'] ?? '').toString();
+    final compact = MediaQuery.sizeOf(context).width < 600;
+    final size = compact ? 100.0 : 150.0;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          compact ? 18 : 32, compact ? 18 : 60, compact ? 18 : 32, 28),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+          width: double.infinity,
+          padding: EdgeInsets.all(compact ? 20 : 32),
+          decoration: BoxDecoration(
+            gradient: RadialGradient(
+              center: const Alignment(-0.55, -0.95),
+              radius: 1.55,
+              colors: [
+                const Color(0xFF3A4264).withValues(alpha: 0.50),
+                const Color(0xFF121214),
+              ],
+            ),
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Row(children: [
+            ClipOval(
+              child: SizedBox(
+                width: size,
+                height: size,
+                child: avatar.isNotEmpty
+                    ? imageWidget(avatar, fit: BoxFit.cover)
+                    : const ColoredBox(
+                        color: Color(0xFF32323A),
+                        child: Center(
+                            child:
+                                LIcon('user', size: 52, color: Colors.white)),
+                      ),
+              ),
+            ),
+            const SizedBox(width: 22),
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Пользователь',
+                        style: TextStyle(
+                            fontSize: 12,
+                            letterSpacing: 1.2,
+                            fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 8),
+                    Text(display,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: compact ? 26 : 38,
+                            fontWeight: FontWeight.w800)),
+                    if (username.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text('@$username',
+                          style: TextStyle(
+                              fontSize: 14,
+                              color: ThemeScope.of(context).mutedForeground)),
+                    ],
+                  ]),
+            ),
+          ]),
+        ),
+      ]),
+    );
+  }
+}
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key, required this.state});
@@ -18,9 +95,25 @@ class ProfilePage extends StatefulWidget {
 }
 
 class _ProfilePageState extends State<ProfilePage> {
+  int? _avatarColor;
   late final TextEditingController _nick =
       TextEditingController(text: widget.state.profile.nickname);
   Timer? _saveTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAvatarColor(widget.state.profile.avatar);
+  }
+
+  Future<void> _loadAvatarColor(String avatar) async {
+    if (avatar.isEmpty) {
+      if (mounted) setState(() => _avatarColor = null);
+      return;
+    }
+    final color = await widget.state.colorFor(avatar);
+    if (mounted) setState(() => _avatarColor = color);
+  }
 
   @override
   void dispose() {
@@ -62,6 +155,7 @@ class _ProfilePageState extends State<ProfilePage> {
     if (!mounted || choice == null) return;
     if (choice == 'remove') {
       state.profile.avatar = '';
+      _loadAvatarColor('');
       state.save();
       setState(() {});
       state.refresh();
@@ -70,6 +164,7 @@ class _ProfilePageState extends State<ProfilePage> {
     final dataUrl = await pickImageAsDataUrl(size: 256, quality: 88);
     if (dataUrl.isEmpty || !mounted) return;
     state.profile.avatar = dataUrl;
+    _loadAvatarColor(dataUrl);
     state.save();
     setState(() {});
     state.refresh();
@@ -110,7 +205,9 @@ class _ProfilePageState extends State<ProfilePage> {
     final nick = state.profile.nickname;
     final avatar = state.profile.avatar;
     final hue = (hashString(nick.isEmpty ? 'angel' : nick) % 360).toDouble();
-    final hero = HSLColor.fromAHSL(1, hue, 0.38, 0.34).toColor();
+    final hero = _avatarColor == null
+        ? HSLColor.fromAHSL(1, hue, 0.38, 0.34).toColor()
+        : Color(_avatarColor!);
     final compact = MediaQuery.sizeOf(context).width < 600;
 
     final liked = state

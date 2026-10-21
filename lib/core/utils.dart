@@ -61,6 +61,25 @@ bool sameArtist(String? a, String? b) {
   return x.isNotEmpty && x == y;
 }
 
+String canonicalTrackTitle(String artist, String title, {String album = ''}) {
+  if (!sameArtist(artist, 'Kai Angel')) return title;
+  final albumKey = compactKey(album);
+  final titleKey = compactKey(title);
+  if (albumKey == 'damage' &&
+      const {'naive', 'slavetotherhythm'}.contains(titleKey)) {
+    return 'slave to the rhythm';
+  }
+  if (albumKey == 'mm' &&
+      const {'mm', 'marilynmanson'}.contains(titleKey)) {
+    return 'MARILYN MANSON';
+  }
+  if (albumKey == 'angelmaycry' &&
+      const {'kylie', 'kylieminogue'}.contains(titleKey)) {
+    return 'KYLIE MINOGUE';
+  }
+  return title;
+}
+
 String fmtDuration(num? seconds) {
   final total = math.max(0, (seconds ?? 0).floor());
   return '${total ~/ 60}:${(total % 60).toString().padLeft(2, '0')}';

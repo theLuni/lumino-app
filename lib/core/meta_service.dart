@@ -444,13 +444,19 @@ class MetaService {
           final tracks = <ReleaseSong>[];
           for (final raw in asList(asMap(album['tracks'])['data'])) {
             final item = asMap(raw);
-            final title = asString(item['title']).trim();
+            final trackArtist =
+                asString(asMap(item['artist'])['name']).isNotEmpty
+                    ? asString(asMap(item['artist'])['name'])
+                    : artistName;
+            final title = canonicalTrackTitle(
+              trackArtist,
+              asString(item['title']).trim(),
+              album: asString(album['title']),
+            );
             if (title.isEmpty) continue;
             tracks.add(ReleaseSong(
               title: title,
-              artist: asString(asMap(item['artist'])['name']).isNotEmpty
-                  ? asString(asMap(item['artist'])['name'])
-                  : artistName,
+              artist: trackArtist,
               album: asString(album['title']),
               cover: cover,
               duration: asInt(item['duration']),
@@ -483,10 +489,14 @@ class MetaService {
           final items = asList(asMap(_json(tracksResponse))['data']);
           for (final raw in items) {
             final item = asMap(raw);
-            final title = asString(item['title']).trim();
             final artist = asString(asMap(item['artist'])['name']).isNotEmpty
                 ? asString(asMap(item['artist'])['name'])
                 : filled.artistName;
+            final title = canonicalTrackTitle(
+              artist,
+              asString(item['title']).trim(),
+              album: filled.name,
+            );
             if (title.isEmpty || !seen.add('${norm(title)}|${norm(artist)}')) {
               continue;
             }
@@ -561,22 +571,29 @@ class MetaService {
     if (url.isEmpty) return Future.value(null);
     return _colorCache.putIfAbsent(url, () async {
       try {
-        final response = await _client
-            .get(Uri.parse(url), headers: {'User-Agent': _ua}).timeout(
-          const Duration(seconds: 9),
-        );
-        if (response.statusCode != 200) {
-          AppLog.instance.log(LogLevel.debug, 'meta',
-              'colour: HTTP ${response.statusCode} for ${AppLog.shortUrl(url)}');
-          return null;
-        }
-        // Capture only the bytes: the isolate message must not carry the Response object.
-        final bytes = response.bodyBytes;
+        final uri = Uri.tryParse(url);
+        final bytes = uri?.data != null
+            ? uri!.data!.contentAsBytes()
+            : await _fetchColorImage(url);
+        if (bytes == null) return null;
         return await Isolate.run(() => _dominantColorOf(bytes));
       } catch (_) {
         return null;
       }
     });
+  }
+
+  Future<Uint8List?> _fetchColorImage(String url) async {
+    final response = await _client
+        .get(Uri.parse(url), headers: {'User-Agent': _ua}).timeout(
+      const Duration(seconds: 9),
+    );
+    if (response.statusCode != 200) {
+      AppLog.instance.log(LogLevel.debug, 'meta',
+          'colour: HTTP ${response.statusCode} for ${AppLog.shortUrl(url)}');
+      return null;
+    }
+    return response.bodyBytes;
   }
 
   void clearMemory() {

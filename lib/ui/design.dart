@@ -108,6 +108,7 @@ const Map<String, String> kIconPaths = {
   'home': 'M3 11.5 12 4l9 7.5 M5.5 10v9.5h13V10 M10 19.5v-5h4v5',
   'search': 'M17.5 11a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0 Z M20 20l-4.2-4.2',
   'library': 'M5 4h4v16H5z M11 4h4v16h-4z M17 5.5l3.6 1-3.4 13.6-3.6-1z',
+  'chats': 'M4 5.5h16v11H9l-5 4v-15z M8 10h8 M8 13.5h5',
   'gear':
       'M12 8.8a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4z M19.4 13.5a7.7 7.7 0 0 0 0-3l1.9-1.5-1.9-3.3-2.3.9a7.6 7.6 0 0 0-2.6-1.5L14.2 2.6h-3.8l-.4 2.5a7.6 7.6 0 0 0-2.6 1.5l-2.3-.9-1.9 3.3 1.9 1.5a7.7 7.7 0 0 0 0 3l-1.9 1.5 1.9 3.3 2.3-.9a7.6 7.6 0 0 0 2.6 1.5l.4 2.5h3.8l.4-2.5a7.6 7.6 0 0 0 2.6-1.5l2.3.9 1.9-3.3z',
   'play': 'M7 4.5v15l13-7.5z',
@@ -509,7 +510,7 @@ Future<Directory> _getImageCacheDirectory() =>
     _imageCacheDirectory ??= (() async {
       final support = await getApplicationSupportDirectory();
       final dir = Directory(
-          '${support.path}${Platform.pathSeparator}lumino_image_cache');
+          '${support.path}${Platform.pathSeparator}lumino_image_cache_v2');
       await dir.create(recursive: true);
       return dir;
     })();
@@ -517,15 +518,15 @@ Future<Directory> _getImageCacheDirectory() =>
 Uint8List? _compressImageForCache(Uint8List source) {
   final decoded = img.decodeImage(source);
   if (decoded == null) return null;
-  final resized = decoded.width > 1200 || decoded.height > 1200
+  final resized = decoded.width > 2400 || decoded.height > 2400
       ? img.copyResize(
           decoded,
-          width: decoded.width >= decoded.height ? 1200 : null,
-          height: decoded.height > decoded.width ? 1200 : null,
+          width: decoded.width >= decoded.height ? 2400 : null,
+          height: decoded.height > decoded.width ? 2400 : null,
           interpolation: img.Interpolation.linear,
         )
       : decoded;
-  return Uint8List.fromList(img.encodeJpg(resized, quality: 76));
+  return Uint8List.fromList(img.encodeJpg(resized, quality: 92));
 }
 
 Future<Uint8List?> _loadCachedImage(String url) {
@@ -741,6 +742,7 @@ class CoverArt extends StatelessWidget {
     this.seed,
     this.alignment = Alignment.center,
     this.child,
+    this.openArtwork = true,
   });
 
   final Track? track;
@@ -753,6 +755,7 @@ class CoverArt extends StatelessWidget {
   final String? seed;
   final Alignment alignment;
   final Widget? child;
+  final bool openArtwork;
 
   @override
   Widget build(BuildContext context) {
@@ -765,7 +768,12 @@ class CoverArt extends StatelessWidget {
         seed ?? (track == null ? 'x' : '${track!.primary}${track!.album}');
     Widget content;
     if (source.isNotEmpty) {
-      final decodeWidth = (size ?? (square ? 300 : 64)) > 100 ? 600 : 200;
+      final displaySize = size ?? (square ? 300 : 64);
+      final decodeWidth = displaySize <= 64
+          ? 200
+          : displaySize <= 100
+              ? 400
+              : math.max(1200, (displaySize * 3).ceil());
       content = OriginalColors(
           child: imageWidget(source,
               alignment: alignment, cacheWidth: decodeWidth));
@@ -798,7 +806,7 @@ class CoverArt extends StatelessWidget {
     if (square) box = AspectRatio(aspectRatio: 1, child: box);
     if (size != null) box = SizedBox(width: size, height: size, child: box);
     final showImage = onTap ??
-        (track != null && track!.cover.isNotEmpty
+        (openArtwork && track != null && track!.cover.isNotEmpty
             ? () => showArtwork(
                   context,
                   track!.cover,
@@ -1791,6 +1799,7 @@ class TrackRow extends StatelessWidget {
     this.durationText = '',
     this.subtitle,
     this.trailing,
+    this.openArtwork = true,
   });
 
   final Track track;
@@ -1802,6 +1811,7 @@ class TrackRow extends StatelessWidget {
   final String durationText;
   final Widget? subtitle;
   final Widget? trailing;
+  final bool openArtwork;
 
   @override
   Widget build(BuildContext context) {
@@ -1834,6 +1844,7 @@ class TrackRow extends StatelessWidget {
                   child: CoverArt(
                     track: track,
                     radius: 7,
+                    openArtwork: openArtwork,
                     child:
                         current ? CurrentCoverOverlay(playing: playing) : null,
                   ),
@@ -2080,6 +2091,7 @@ class TrackCard extends StatelessWidget {
                       track: track,
                       square: true,
                       radius: 12,
+                      openArtwork: false,
                       child: current
                           ? CurrentCoverOverlay(
                               playing: playing, size: 22, radius: 12)
@@ -2209,6 +2221,7 @@ class MixCover extends StatelessWidget {
     this.showPlay = false,
     this.colorArt = false,
     this.collection = false,
+    this.onTap,
   });
 
   final int index;
@@ -2220,14 +2233,15 @@ class MixCover extends StatelessWidget {
   final bool showPlay;
   final bool colorArt;
   final bool collection;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final color = kMixColors[index % kMixColors.length];
-    return AspectRatio(
+    Widget cover = AspectRatio(
       aspectRatio: 1,
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(collection ? 12 : 12),
+        borderRadius: BorderRadius.circular(12),
         child: LayoutBuilder(
           builder: (context, constraints) {
             final w = constraints.maxWidth;
@@ -2354,6 +2368,16 @@ class MixCover extends StatelessWidget {
         ),
       ),
     );
+    if (onTap != null) {
+      cover = GestureDetector(
+        onTap: onTap,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: cover,
+        ),
+      );
+    }
+    return cover;
   }
 }
 

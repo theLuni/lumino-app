@@ -53,7 +53,8 @@ class AuthService {
   }
 
   Future<void> verify({required String email, required String code}) async {
-    final data = await _post('/api/auth/verify', {'email': email, 'code': code});
+    final data =
+        await _post('/api/auth/verify', {'email': email, 'code': code});
     _setUser(data['user']);
   }
 
@@ -61,8 +62,10 @@ class AuthService {
     await _post('/api/auth/resend', {'email': email});
   }
 
-  Future<void> login({required String username, required String password}) async {
-    final data = await _post('/api/auth/login', {'username': username, 'password': password});
+  Future<void> login(
+      {required String username, required String password}) async {
+    final data = await _post(
+        '/api/auth/login', {'username': username, 'password': password});
     _setUser(data['user']);
   }
 
@@ -86,13 +89,16 @@ class AuthService {
     required String code,
     required String newPassword,
   }) async {
-    await _post('/api/auth/reset', {'email': email, 'code': code, 'new_password': newPassword});
+    await _post('/api/auth/reset',
+        {'email': email, 'code': code, 'new_password': newPassword});
   }
 
   /// Health check (GET /health). Updates [status] and returns true if the server is up.
   Future<bool> ping() async {
     try {
-      final res = await _client.get(Uri.parse('$base/health')).timeout(const Duration(seconds: 6));
+      final res = await _client
+          .get(Uri.parse('$base/health'))
+          .timeout(const Duration(seconds: 6));
       final ok = res.statusCode == 200;
       if (ok) {
         status?.markOk();
@@ -131,6 +137,51 @@ class AuthService {
     await _call('PUT', '/api/state', rawBody: json);
   }
 
+  Future<Map<String, dynamic>> chatChats() => _call('GET', '/api/chat/chats');
+
+  Future<List<Map<String, dynamic>>> searchChatUsers(String query) async {
+    final data = await _call(
+      'GET',
+      '/api/chat/users?q=${Uri.encodeQueryComponent(query)}',
+    );
+    return _maps(data['users']);
+  }
+
+  Future<List<Map<String, dynamic>>> chatMessages(String chatId) async {
+    final data = await _call(
+      'GET',
+      '/api/chat/messages?chat_id=${Uri.encodeQueryComponent(chatId)}',
+    );
+    return _maps(data['messages']);
+  }
+
+  Future<String> createDirectChat(String username) async {
+    final data = await _post('/api/chat/create', {'username': username});
+    return (data['chat_id'] ?? '').toString();
+  }
+
+  Future<void> sendChatMessage(
+    String chatId, {
+    String text = '',
+    String image = '',
+    Map<String, dynamic>? track,
+  }) async {
+    await _post('/api/chat/send', {
+      'chat_id': chatId,
+      'text': text,
+      if (image.isNotEmpty) 'image': image,
+      if (track != null) 'track': track,
+    });
+  }
+
+  List<Map<String, dynamic>> _maps(dynamic value) => value is List
+      ? value
+          .whereType<Map>()
+          .map((item) =>
+              item.map((key, value) => MapEntry(key.toString(), value)))
+          .toList()
+      : <Map<String, dynamic>>[];
+
   void _setUser(dynamic raw) {
     if (raw is Map) {
       username = raw['username']?.toString();
@@ -149,7 +200,8 @@ class AuthService {
 
   /// One request to the server. Keeps the session cookie in sync and turns
   /// errors into [AuthException].
-  Future<Map<String, dynamic>> _call(String method, String path, {String? rawBody}) async {
+  Future<Map<String, dynamic>> _call(String method, String path,
+      {String? rawBody}) async {
     final req = http.Request(method, Uri.parse('$base$path'));
     req.headers['Accept'] = 'application/json';
     if (rawBody != null) {
@@ -160,7 +212,8 @@ class AuthService {
 
     final http.Response res;
     try {
-      final streamed = await _client.send(req).timeout(const Duration(seconds: 30));
+      final streamed =
+          await _client.send(req).timeout(const Duration(seconds: 30));
       res = await http.Response.fromStream(streamed);
     } catch (_) {
       status?.markDown();
@@ -177,7 +230,9 @@ class AuthService {
     var data = <String, dynamic>{};
     try {
       final decoded = jsonDecode(utf8.decode(res.bodyBytes));
-      if (decoded is Map) data = decoded.map((k, v) => MapEntry(k.toString(), v));
+      if (decoded is Map) {
+        data = decoded.map((k, v) => MapEntry(k.toString(), v));
+      }
     } catch (_) {}
 
     if (res.statusCode >= 400 || data['ok'] == false) {

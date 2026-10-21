@@ -38,22 +38,47 @@ class _ArtistPageState extends State<ArtistPage> {
   Future<void> _load() async {
     final state = widget.state;
     final name = widget.name;
+    var index = ReleaseIndex();
     try {
       final info = await state.artistInfo(name);
       if (mounted) setState(() => _info = info);
-      final source = info.banner.isNotEmpty ? info.banner : info.avatar;
+      final source = info.avatar.isNotEmpty ? info.avatar : info.banner;
       if (source.isNotEmpty) {
         final color = await state.colorFor(source);
         if (mounted && color != null) setState(() => _color = color);
       }
     } catch (_) {}
     try {
-      final index = await state.artistReleaseIndex(name);
+      index = await state.artistReleaseIndex(name);
       if (mounted) setState(() => _index = index);
     } catch (_) {}
     try {
       final catalog = await state.loadArtistCatalog([name]);
       if (mounted) {
+        for (final track in catalog) {
+          if (track.cover.isNotEmpty) continue;
+          final topSong = index.songs
+              .where((song) =>
+                  compactKey(song.title) == compactKey(track.title) &&
+                  sameArtist(
+                    song.artist.isEmpty ? name : song.artist,
+                    track.primary,
+                  ))
+              .firstOrNull;
+          if (topSong?.cover.isNotEmpty == true) {
+            track.cover = topSong!.cover;
+            track.coverSource = 'deezer';
+            continue;
+          }
+          final album = index.releases
+              .where((release) =>
+                  compactKey(release.name) == compactKey(track.album))
+              .firstOrNull;
+          if (album?.cover.isNotEmpty == true) {
+            track.cover = album!.cover;
+            track.coverSource = 'deezer';
+          }
+        }
         setState(() {
           _catalog = catalog;
           _loading = false;
@@ -68,7 +93,12 @@ class _ArtistPageState extends State<ArtistPage> {
 
   // Catalog order is kept: Dart's List.sort is not stable and the old comparator
   // (always 0 for track ids) shuffled the list randomly on each rebuild.
-  List<Track> get _popular => _catalog.take(5).toList();
+  List<Track> get _popular => _catalog
+      .where((track) =>
+          !sameArtist(track.primary, 'FENDIGLOCK') ||
+          !const {'ботанический сад', 'много дел'}.contains(norm(track.title)))
+      .take(5)
+      .toList();
 
   @override
   Widget build(BuildContext context) {
@@ -125,6 +155,7 @@ class _ArtistPageState extends State<ArtistPage> {
                         onArtist: (name) => state.go('artist', arg: name),
                         onMenu: (position) =>
                             openTrackMenu(context, state, track, position),
+                        openArtwork: false,
                       );
                     },
                   ),
@@ -374,7 +405,6 @@ class MixPage extends StatelessWidget {
     final title = 'Daily Mix ${index + 1}';
     final lead =
         tracks.where((t) => t.cover.isNotEmpty).firstOrNull ?? tracks.first;
-    final names = tracks.expand((t) => t.artists).toSet().take(5).join(', ');
     final ids = tracks.map((t) => t.id).toList();
     state.ensureCovers(tracks.take(10), priority: true);
 
@@ -389,13 +419,19 @@ class MixPage extends StatelessWidget {
             SizedBox(
               width: compact ? 128 : 200,
               height: compact ? 128 : 200,
-              child: MixCover(
-                index: index,
-                lead: lead,
-                seed: state.mixSeeds[listKey] ?? '',
-                artistAvatar: (name) => state.avatarOf(name),
-                collection: true,
-                showPlay: false,
+              child: HoverBuilder(
+                builder: (context, hovered) => MixCover(
+                  index: index,
+                  lead: lead,
+                  seed: state.mixSeeds[listKey] ?? '',
+                  artistAvatar: (name) => state.avatarOf(name),
+                  collection: true,
+                  colorArt: hovered,
+                  showPlay: false,
+                  onTap: lead.cover.isEmpty
+                      ? null
+                      : () => showArtwork(context, lead.cover, title),
+                ),
               ),
             ),
             SizedBox(width: compact ? 14 : 24),
@@ -424,18 +460,6 @@ class MixPage extends StatelessWidget {
                               fontSize: 12.5,
                               color: ThemeScope.of(context).mutedForeground)),
                     ]),
-                    const SizedBox(height: 6),
-                    Text(
-                        '${tracks.length} ${plural(tracks.length, 'track', 'tracks')}',
-                        style: TextStyle(
-                            fontSize: 13,
-                            color: ThemeScope.of(context).mutedForeground)),
-                    const SizedBox(height: 4),
-                    Text(names,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 12.5, color: Color(0x73FFFFFF))),
                     const SizedBox(height: 14),
                     PlayButton(
                         label: 'Play mix', onTap: () => state.playIds(ids)),
@@ -480,12 +504,14 @@ class _ReleasePageState extends State<ReleasePage> {
   // The tracklist is fetched into a new Release object; keep it here, otherwise
   // the page keeps showing the empty original and never displays the tracks.
   Release? _filled;
+  int? _color;
   bool _fillDone = false;
   Release get _release => _filled ?? widget.arg.release;
 
   @override
   void initState() {
     super.initState();
+    _loadColor();
     if (_release.tracks.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         try {
@@ -502,6 +528,11 @@ class _ReleasePageState extends State<ReleasePage> {
       _fillDone = true;
       _ensureCovers();
     }
+  }
+
+  Future<void> _loadColor() async {
+    final color = await widget.state.colorFor(_release.cover);
+    if (mounted && color != null) setState(() => _color = color);
   }
 
   void _ensureCovers() {
@@ -534,6 +565,7 @@ class _ReleasePageState extends State<ReleasePage> {
     final type = _release.kindLabel.toUpperCase();
     final isSingle = _release.type == 'single';
     final compact = MediaQuery.sizeOf(context).width < 600;
+    final heroColor = _color == null ? null : Color(_color!);
 
     return Padding(
       padding: EdgeInsets.fromLTRB(
@@ -541,95 +573,112 @@ class _ReleasePageState extends State<ReleasePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            SizedBox(
-              width: compact ? 112 : 186,
-              height: compact ? 112 : 186,
-              child: CoverArt(
-                url: cover,
-                onTap: () => showArtwork(context, cover, _release.name),
-                seed: _release.name,
-                letter: _release.name.isEmpty
-                    ? '?'
-                    : _release.name.characters.first.toUpperCase(),
-                square: true,
-                radius: 14,
-              ),
-            ),
-            SizedBox(width: compact ? 14 : 26),
-            Expanded(
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(type,
-                        style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 1.4,
-                            color: ThemeScope.of(context).mutedForeground)),
-                    const SizedBox(height: 6),
-                    Text(_release.name,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: compact ? 27 : 38,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: -1.2)),
-                    if (artist.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      GestureDetector(
-                        onTap: () => state.go('artist', arg: artist),
-                        child: MouseRegion(
-                          cursor: SystemMouseCursors.click,
-                          child: Row(mainAxisSize: MainAxisSize.min, children: [
-                            AvatarFromUrl(
-                              key: ValueKey('release-artist-$artist'),
-                              name: artist,
-                              url: () => state.avatarOf(artist),
-                              size: 26,
-                              fontSize: 12,
-                            ),
-                            const SizedBox(width: 9),
-                            Text(displayName(artist),
-                                style: const TextStyle(
-                                    fontSize: 14, fontWeight: FontWeight.w600)),
-                          ]),
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 8),
-                    Text(
-                      [
-                        year,
-                        if (_release.tracks.isNotEmpty)
-                          '${_release.tracks.length} ${plural(_release.tracks.length, 'track', 'tracks')}'
-                      ].where((s) => s.isNotEmpty).join(' · '),
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: ThemeScope.of(context).mutedForeground),
+          Container(
+            padding: const EdgeInsets.only(bottom: 16),
+            decoration: heroColor == null
+                ? null
+                : BoxDecoration(
+                    gradient: RadialGradient(
+                      center: const Alignment(-0.55, -0.95),
+                      radius: 1.55,
+                      colors: [
+                        heroColor.withValues(alpha: 0.38),
+                        Colors.transparent,
+                      ],
                     ),
-                    const SizedBox(height: 16),
-                    Row(children: [
-                      PlayButton(
-                        label: 'Play',
-                        onTap: () => state.playRelease(_release, artist),
+                  ),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              SizedBox(
+                width: compact ? 112 : 186,
+                height: compact ? 112 : 186,
+                child: CoverArt(
+                  url: cover,
+                  onTap: () => showArtwork(context, cover, _release.name),
+                  seed: _release.name,
+                  letter: _release.name.isEmpty
+                      ? '?'
+                      : _release.name.characters.first.toUpperCase(),
+                  square: true,
+                  radius: 14,
+                ),
+              ),
+              SizedBox(width: compact ? 14 : 26),
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(type,
+                          style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 1.4,
+                              color: ThemeScope.of(context).mutedForeground)),
+                      const SizedBox(height: 6),
+                      Text(_release.name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: compact ? 27 : 38,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: -1.2)),
+                      if (artist.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        GestureDetector(
+                          onTap: () => state.go('artist', arg: artist),
+                          child: MouseRegion(
+                            cursor: SystemMouseCursors.click,
+                            child:
+                                Row(mainAxisSize: MainAxisSize.min, children: [
+                              AvatarFromUrl(
+                                key: ValueKey('release-artist-$artist'),
+                                name: artist,
+                                url: () => state.avatarOf(artist),
+                                size: 26,
+                                fontSize: 12,
+                              ),
+                              const SizedBox(width: 9),
+                              Text(displayName(artist),
+                                  style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w600)),
+                            ]),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 8),
+                      Text(
+                        [
+                          year,
+                          if (_release.tracks.isNotEmpty)
+                            '${_release.tracks.length} ${plural(_release.tracks.length, 'track', 'tracks')}'
+                        ].where((s) => s.isNotEmpty).join(' · '),
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: ThemeScope.of(context).mutedForeground),
                       ),
-                      const SizedBox(width: 8),
-                      IconAction(
-                        icon: 'share',
-                        size: 38,
-                        iconSize: 18,
-                        tooltip: 'Share',
-                        onTap: () async {
-                          await copyToClipboard(
-                              '${_release.name} — ${displayName(artist)}');
-                          state.showToast('Link copied to clipboard');
-                        },
-                      ),
+                      const SizedBox(height: 16),
+                      Row(children: [
+                        PlayButton(
+                          label: 'Play',
+                          onTap: () => state.playRelease(_release, artist),
+                        ),
+                        const SizedBox(width: 8),
+                        IconAction(
+                          icon: 'share',
+                          size: 38,
+                          iconSize: 18,
+                          tooltip: 'Share',
+                          onTap: () async {
+                            await copyToClipboard(
+                                '${_release.name} — ${displayName(artist)}');
+                            state.showToast('Link copied to clipboard');
+                          },
+                        ),
+                      ]),
                     ]),
-                  ]),
-            ),
-          ]),
+              ),
+            ]),
+          ),
           const SectionTitle(title: 'Tracks'),
           if (_release.tracks.isEmpty)
             Padding(
@@ -657,7 +706,8 @@ class _ReleasePageState extends State<ReleasePage> {
                 fallbackArtist: artist,
                 current: _isCurrent(_release.tracks[i]),
                 playing: state.playing,
-                onPlay: () => state.playRelease(_release, artist, start: i),
+                onPlay: () => state.playRelease(_release, artist,
+                    start: i, strictStart: true),
                 onArtist: (name) => state.go('artist', arg: name),
                 onMenu: (position, track) =>
                     openTrackMenu(context, state, track, position),
@@ -743,16 +793,28 @@ class _ReleaseRowState extends State<_ReleaseRow> {
               width: 38,
               child: Center(
                 child: widget.current
-                    ? (widget.single
-                        ? Text('${widget.number}',
+                    ? (_hovered
+                        ? Container(
+                            width: 28,
+                            height: 28,
+                            decoration: const BoxDecoration(
+                              color: Color(0xB3000000),
+                              shape: BoxShape.circle,
+                            ),
+                            alignment: Alignment.center,
+                            child: LIcon(
+                              widget.playing ? 'pause' : 'play',
+                              size: 14,
+                              color: Colors.white,
+                            ),
+                          )
+                        : Text('${widget.number}',
                             style: const TextStyle(
                                 fontSize: 13,
                                 color: Color(0x66FFFFFF),
                                 fontFeatures: [
                                   ui.FontFeature.tabularFigures()
-                                ]))
-                        : CurrentCoverOverlay(
-                            playing: widget.playing, size: 18, radius: 8))
+                                ])))
                     : (_hovered
                         ? const LIcon('play', size: 14, color: Colors.white)
                         : Text('${widget.number}',

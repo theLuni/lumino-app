@@ -1,14 +1,17 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../core/app_state.dart';
 import '../core/models.dart';
 import '../core/utils.dart';
 import 'actions.dart';
 import 'design.dart';
+import 'pages/chats.dart';
 
 class FullscreenPlayer extends StatefulWidget {
   const FullscreenPlayer({super.key, required this.state});
@@ -29,6 +32,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
   final Map<int, GlobalKey> _lineKeys = {};
   DateTime _userScrollUntil = DateTime.fromMillisecondsSinceEpoch(0);
   bool _showLikeBurst = false;
+  bool _showLikeDim = false;
   Timer? _likeBurstTimer;
 
   @override
@@ -64,6 +68,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
     _variant = 0;
     _active = -1;
     _showLikeBurst = false;
+    _showLikeDim = false;
     _lineKeys.clear();
     _load(track);
   }
@@ -90,6 +95,11 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
       _lyrics = result;
       _loading = false;
       _variant = _defaultVariant(result);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _track?.key == track.key && _scroll.hasClients) {
+        _scroll.jumpTo(0);
+      }
     });
     widget.state.refresh();
   }
@@ -144,9 +154,19 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
     // by estimate and then correct it on the real one.
     final built = _lineKeys[index]?.currentContext;
     if (built != null) {
+      final lineBox = built.findRenderObject();
+      final viewportBox =
+          _scroll.position.context.storageContext.findRenderObject();
+      if (lineBox is RenderBox && viewportBox is RenderBox) {
+        final lineTop = lineBox.localToGlobal(Offset.zero).dy;
+        final lineBottom = lineTop + lineBox.size.height;
+        final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
+        final viewportBottom = viewportTop + viewportBox.size.height;
+        if (lineTop >= viewportTop && lineBottom <= viewportBottom) return;
+      }
       Scrollable.ensureVisible(
         built,
-        alignment: 0.38,
+        alignment: 0.78,
         duration: const Duration(milliseconds: 520),
         curve: Curves.easeOutCubic,
       );
@@ -154,7 +174,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
     }
     final position = _scroll.position;
     final target =
-        math.max(0.0, index * _lineHeight - position.viewportDimension * 0.38);
+        math.max(0.0, index * _lineHeight - position.viewportDimension * 0.78);
     _scroll
         .animateTo(
       math.min(target, position.maxScrollExtent),
@@ -173,8 +193,8 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
     });
   }
 
-  // Until the player has been opened once, its layout, lyrics pane and the
-  // sigma-54 cover blur are never needed. Building them at app start was pure cost.
+  // Until the player has been opened once, its layout and lyrics pane are not
+  // needed. Building them at app start adds unnecessary work.
   bool _everOpened = false;
 
   @override
@@ -209,7 +229,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
         child: Padding(
           padding: const EdgeInsets.fromLTRB(18, 8, 18, 12),
           child: Column(children: [
-            _header(),
+            _header(track),
             const SizedBox(height: 10),
             Expanded(
               child: LayoutBuilder(builder: (context, constraints) {
@@ -247,13 +267,13 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
         child: Stack(fit: StackFit.expand, children: [
       ColoredBox(color: const Color(0xFF08080A)),
       if (track.cover.isNotEmpty)
-        Opacity(
-          opacity: 0.55,
-          child: ImageFiltered(
-            imageFilter: ui.ImageFilter.blur(sigmaX: 54, sigmaY: 54),
+        ImageFiltered(
+          imageFilter: ui.ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+          child: Opacity(
+            opacity: 0.9,
             child: Transform.scale(
-              scale: 1.25,
-              child: imageWidget(track.cover, cacheWidth: 256),
+              scale: 1.12,
+              child: imageWidget(track.cover, cacheWidth: 1800),
             ),
           ),
         ),
@@ -263,9 +283,9 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [
-              const Color(0xF708080A),
-              const Color(0xE6101014),
-              const Color(0xFA050506),
+              const Color(0x7008080A),
+              const Color(0x50101014),
+              const Color(0x99050506),
             ],
           ),
         ),
@@ -273,11 +293,27 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
     ]));
   }
 
-  Widget _header() {
+  Widget _header(Track track) {
+    void startDragging() {
+      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+        windowManager.startDragging();
+      }
+    }
+
     return Row(children: [
-      _Pill(
-        onTap: widget.state.closeFull,
-        child: const LIcon('chevD', size: 16, color: Colors.white),
+      Transform.translate(
+        offset: const Offset(0, 4),
+        child: _Pill(
+          onTap: widget.state.closeFull,
+          child: const LIcon('chevD', size: 15, color: Colors.white),
+        ),
+      ),
+      Expanded(
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onPanStart: (_) => startDragging(),
+          child: const SizedBox(height: 32),
+        ),
       ),
     ]);
   }
@@ -314,8 +350,8 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
                   onTap: () => openTrackRelease(state, track),
                 ),
                 AnimatedOpacity(
-                  duration: const Duration(milliseconds: 220),
-                  opacity: liked ? 0.30 : 0,
+                  duration: const Duration(milliseconds: 150),
+                  opacity: _showLikeDim ? 0.30 : 0,
                   child: const IgnorePointer(
                     child: ColoredBox(color: Colors.black),
                   ),
@@ -350,21 +386,41 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
                         : 'Add to Liked Songs',
                     onTap: () {
                       if (!liked) {
-                        setState(() => _showLikeBurst = true);
+                        setState(() {
+                          _showLikeBurst = true;
+                          _showLikeDim = true;
+                        });
                         _likeBurstTimer?.cancel();
                         _likeBurstTimer = Timer(
                           const Duration(milliseconds: 850),
                           () {
                             if (mounted) {
-                              setState(() => _showLikeBurst = false);
+                              setState(() {
+                                _showLikeBurst = false;
+                                _showLikeDim = false;
+                              });
                             }
                           },
                         );
                       } else {
-                        setState(() => _showLikeBurst = false);
+                        setState(() {
+                          _showLikeBurst = false;
+                          _showLikeDim = false;
+                        });
                       }
                       state.toggleLike(track);
                     },
+                  ),
+                ),
+                Positioned(
+                  right: 8,
+                  bottom: 8,
+                  child: IconAction(
+                    icon: 'share',
+                    size: 30,
+                    iconSize: 14,
+                    tooltip: 'Share Track',
+                    onTap: () => shareTrackInChat(context, state, track),
                   ),
                 ),
               ]),
@@ -514,6 +570,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
           Expanded(
             child: ListView.builder(
               controller: _scroll,
+              physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.symmetric(vertical: 30, horizontal: 12),
               itemCount: variant.lines.length,
               itemBuilder: (context, index) => _lyricLine(
@@ -544,6 +601,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
             },
             child: ListView.builder(
               controller: _scroll,
+              physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.fromLTRB(12, 24, 12, 16),
               itemCount: variant.lines.length,
               itemBuilder: (context, index) {
@@ -618,23 +676,74 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
                     math.max(0.3, end - start))
                 .clamp(0.0, 1.0)
                 .toDouble();
-        return ShaderMask(
-          blendMode: BlendMode.srcIn,
-          shaderCallback: (bounds) => LinearGradient(
-            begin: Alignment.centerLeft,
-            end: Alignment.centerRight,
-            stops: [0, progress, progress, 1],
-            colors: const [
-              Colors.white,
-              Colors.white,
-              Color(0x6BFFFFFF),
-              Color(0x6BFFFFFF)
-            ],
-          ).createShader(bounds),
-          child: Text(line.text),
+        final style = DefaultTextStyle.of(context).style;
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final visibleLines = <String>[];
+            for (final paragraph in line.text.split(RegExp(r'\r?\n'))) {
+              visibleLines.addAll(_wrapLyricsParagraph(
+                paragraph,
+                style,
+                constraints.maxWidth,
+                Directionality.of(context),
+                MediaQuery.textScalerOf(context),
+              ));
+            }
+            return TweenAnimationBuilder<double>(
+              tween: Tween<double>(end: progress),
+              duration: const Duration(milliseconds: 90),
+              curve: Curves.linear,
+              builder: (context, fill, child) => Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: visibleLines
+                    .map((text) => ShaderMask(
+                          blendMode: BlendMode.srcIn,
+                          shaderCallback: (bounds) => LinearGradient(
+                            begin: Alignment.centerLeft,
+                            end: Alignment.centerRight,
+                            stops: [0, fill, fill, 1],
+                            colors: const [
+                              Colors.white,
+                              Colors.white,
+                              Color(0x6BFFFFFF),
+                              Color(0x6BFFFFFF)
+                            ],
+                          ).createShader(bounds),
+                          child: Text(text, style: style, softWrap: false),
+                        ))
+                    .toList(),
+              ),
+            );
+          },
         );
       },
     );
+  }
+
+  List<String> _wrapLyricsParagraph(
+    String paragraph,
+    TextStyle style,
+    double maxWidth,
+    TextDirection direction,
+    TextScaler scaler,
+  ) {
+    if (paragraph.isEmpty || !maxWidth.isFinite) return [paragraph];
+    final painter = TextPainter(
+      text: TextSpan(text: paragraph, style: style),
+      textDirection: direction,
+      textScaler: scaler,
+    )..layout(maxWidth: maxWidth);
+    final lines = <String>[];
+    var offset = 0;
+    while (offset < paragraph.length) {
+      final boundary = painter.getLineBoundary(TextPosition(offset: offset));
+      final next = boundary.end.clamp(offset + 1, paragraph.length).toInt();
+      final text = paragraph.substring(offset, next).trim();
+      if (text.isNotEmpty) lines.add(text);
+      offset = next;
+    }
+    return lines.isEmpty ? [''] : lines;
   }
 }
 
@@ -677,9 +786,9 @@ class _FullProgressState extends State<_FullProgress> {
 
             return GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onHorizontalDragStart: (d) => update(d.localPosition),
-              onHorizontalDragUpdate: (d) => update(d.localPosition),
-              onHorizontalDragEnd: (_) {
+              onPanStart: (d) => update(d.localPosition),
+              onPanUpdate: (d) => update(d.localPosition),
+              onPanEnd: (_) {
                 widget.state.seekToFraction(_dragFraction);
                 setState(() => _dragging = false);
               },
@@ -774,11 +883,12 @@ class _PillState extends State<_Pill> {
         onTap: widget.onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 150),
-          height: 34,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
+          width: 34,
+          height: 28,
+          padding: EdgeInsets.zero,
           decoration: BoxDecoration(
             color: _hovered ? const Color(0x24FFFFFF) : const Color(0x14FFFFFF),
-            borderRadius: BorderRadius.circular(999),
+            borderRadius: BorderRadius.circular(8),
             border: Border.all(color: const Color(0x1AFFFFFF)),
           ),
           child: Center(child: widget.child),

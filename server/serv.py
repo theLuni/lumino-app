@@ -174,6 +174,31 @@ CREATE TABLE IF NOT EXISTS email_codes (
     attempts   INTEGER NOT NULL DEFAULT 0,
     last_sent  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS chats (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL DEFAULT '',
+    type       TEXT NOT NULL,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chat_members (
+    chat_id   TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+    user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    active    INTEGER NOT NULL DEFAULT 1,
+    joined_at TEXT NOT NULL,
+    PRIMARY KEY (chat_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+    sender_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    text       TEXT NOT NULL DEFAULT '',
+    image_data TEXT NOT NULL DEFAULT '',
+    track_json TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_messages_chat_id_id
+    ON chat_messages(chat_id, id);
 """
 
 
@@ -232,6 +257,7 @@ def init_db() -> None:
     _load_code_secret()
     with _db_lock, closing(db()) as conn:
         conn.executescript(SCHEMA)
+        conn.execute("DELETE FROM chats WHERE type != 'direct'")
         conn.execute("DELETE FROM sessions WHERE expires_at < ?", (iso(),))
         conn.commit()
 
@@ -308,6 +334,21 @@ def public_user(user: dict) -> dict:
         "last_seen": user.get("last_seen") or "",
         "initial": (name[:1] or "?").upper(),
     }
+
+
+def _chat_user(user_id: int) -> dict | None:
+    user = one("SELECT id, username, display_name, created_at, last_seen FROM users WHERE id = ?",
+               (user_id,))
+    if not user:
+        return None
+    result = public_user(user)
+    state = one("SELECT data FROM user_state WHERE user_id = ?", (user_id,))
+    try:
+        profile = json.loads(state["data"]).get("profile", {}) if state else {}
+        result["avatar"] = str(profile.get("avatar") or "") if isinstance(profile, dict) else ""
+    except (ValueError, TypeError):
+        result["avatar"] = ""
+    return result
 
 
 # ------------------------------------------------------------------ почта и коды
@@ -706,6 +747,7 @@ def search_catalog(q: str) -> tuple[list, str]:
         for t in tracks:
             if not t["src"] or not _is_direct_audio(t["src"]):
                 continue
+            _apply_track_alias(t)
             ident = norm(t["artists"][0]) + "|" + norm(t["title"])
             audio = t["src"].lower().split("#")[0]
             if audio in seen_audio or ident in seen_ident:
@@ -725,6 +767,25 @@ def search_catalog(q: str) -> tuple[list, str]:
     return [], err
 
 
+TRACK_ALIASES = [
+    ("Kai Angel", "damage", ("naive", "slave to the rhythm"), "slave to the rhythm"),
+    ("Kai Angel", "MM", ("MM", "MARILYN MANSON"), "MARILYN MANSON"),
+    ("Kai Angel", "ANGEL MAY CRY", ("KYLIE", "KYLIE MINOGUE"), "KYLIE MINOGUE"),
+]
+
+
+def _apply_track_alias(track: dict) -> dict:
+    artists = track.get("artists") or []
+    artist = artists[0] if artists else ""
+    for owner, album, sources, title in TRACK_ALIASES:
+        if (norm(artist) == norm(owner)
+                and norm(track.get("album")) == norm(album)
+                and norm(track.get("title")) in {norm(s) for s in sources}):
+            track["title"] = title
+            break
+    return track
+
+
 def proxy_track(t: dict) -> dict:
     """Ссылку на аудио отдаём через /api/audio: сервер сам подставляет Referer каталога."""
     out = dict(t)
@@ -735,10 +796,7 @@ def proxy_track(t: dict) -> dict:
 
 # ------------------------------------------------------------------ тексты песен (lrclib)
 
-LYRICS_ALIASES = [
-    ("Kai Angel", "KYLIE MINOGUE", "KYLIE"),
-    ("Kai Angel", "slave to the rhythm", "naive"),
-]
+LYRICS_ALIASES = TRACK_ALIASES
 
 
 def _clean_title(title) -> str:
@@ -798,7 +856,8 @@ def _lyrics_for(title, artist, artists, album, duration) -> dict:
             names.append(a)
     names = names[:3]
     dur = round(float(duration or 0))
-    key = "%s|%s|%d" % (norm(names[0] if names else ""), norm(cleaned), dur)
+    key = "%s|%s|%s|%d" % (
+        norm(names[0] if names else ""), norm(album), norm(cleaned), dur)
     with _lock:
         hit = _lyrics_cache.get(key)
     if hit:
@@ -811,13 +870,12 @@ def _lyrics_for(title, artist, artists, album, duration) -> dict:
     def take(item, trusted: bool) -> None:
         if not isinstance(item, dict) or not item.get("id"):
             return
-        if not trusted:
-            t = norm(item.get("trackName"))
-            if not t or not (want in t or t in want):
-                return
-            a = norm(item.get("artistName"))
-            if names and not any(norm(n) in a or a in norm(n) for n in names):
-                return
+        t = norm(item.get("trackName"))
+        if not t or t != want:
+            return
+        a = norm(item.get("artistName"))
+        if names and not any(norm(n) and norm(n) in a for n in names):
+            return
         found.setdefault(item["id"], item)
 
     def absorb(results) -> None:
@@ -883,15 +941,28 @@ def get_lyrics(t: dict) -> dict:
     title = t.get("title") or ""
     artists = [t.get("artist") or ""] + list(t.get("artists") or [])
     names = [norm(x) for x in artists if x]
-    alias = next((a for a in LYRICS_ALIASES if norm(a[1]) == norm(title) and norm(a[0]) in names), None)
-    args = (t.get("artist") or "", t.get("artists") or [], t.get("album") or "", t.get("duration") or 0)
+    album = t.get("album") or ""
+    alias = next(
+        (a for a in LYRICS_ALIASES
+         if norm(a[0]) in names and norm(a[1]) == norm(album)
+         and norm(title) in {norm(s) for s in a[2]}),
+        None,
+    )
+    args = (t.get("artist") or "", t.get("artists") or [], album,
+            t.get("duration") or 0)
     if not alias:
         return _lyrics_for(title, *args)
-    aliased = _lyrics_for(alias[2], *args)
-    if aliased["variants"]:
-        return aliased
-    original = _lyrics_for(title, *args)
-    return original if original["variants"] else aliased
+    canonical = alias[3]
+    result = _lyrics_for(canonical, *args)
+    if result["variants"]:
+        return result
+    for source in alias[2]:
+        if norm(source) == norm(canonical):
+            continue
+        fallback = _lyrics_for(source, *args)
+        if fallback["variants"]:
+            return fallback
+    return result
 
 
 # ------------------------------------------------------------------ похожие исполнители (Deezer)
@@ -1216,7 +1287,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self._route()
         try:
-            if path.startswith("/api/auth/"):
+            if path.startswith("/api/auth/") or path.startswith("/api/chat/"):
                 return self.api_post(path)
             return self._fail("не найдено", 404)
         except (BrokenPipeError, ConnectionResetError):
@@ -1275,7 +1346,142 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- GET ----------
 
+    def chat_get(self, path: str) -> None:
+        user = self._user()
+        if not user:
+            return self._fail("нужно войти", 401)
+        if path == "/api/chat/users":
+            term = self._param("q").strip()
+            if len(term) < 2:
+                return self._json({"users": []})
+            rows = query(
+                """SELECT id FROM users
+                   WHERE email_verified = 1 AND id != ?
+                     AND (username LIKE ? OR display_name LIKE ?)
+                   ORDER BY CASE WHEN username LIKE ? THEN 0 ELSE 1 END,
+                            username COLLATE NOCASE LIMIT 30""",
+                (user["id"], "%" + term + "%", "%" + term + "%",
+                 term + "%"),
+            )
+            return self._json({"users": [u for row in rows
+                                          if (u := _chat_user(row["id"]))]})
+        if path == "/api/chat/chats":
+            rows = query(
+                """SELECT c.id, c.name, c.type,
+                          msg.text AS last_text, msg.created_at AS last_at,
+                          msg.sender_id AS last_sender
+                   FROM chat_members mine JOIN chats c ON c.id = mine.chat_id
+                   LEFT JOIN chat_messages msg ON msg.id = (
+                       SELECT MAX(id) FROM chat_messages WHERE chat_id = c.id)
+                   WHERE mine.user_id = ? AND mine.active = 1 AND c.type = 'direct'
+                   ORDER BY COALESCE(msg.id, 0) DESC""",
+                (user["id"],),
+            )
+            chats = []
+            for row in rows:
+                item = dict(row)
+                if row["type"] == "direct":
+                    member = one(
+                        """SELECT user_id FROM chat_members
+                           WHERE chat_id = ? AND user_id != ? AND active = 1 LIMIT 1""",
+                        (row["id"], user["id"]),
+                    )
+                    item["peer"] = _chat_user(member["user_id"]) if member else None
+                    if item["peer"]:
+                        item["name"] = item["peer"]["display_name"] or item["peer"]["username"]
+                chats.append(item)
+            return self._json({"chats": chats, "user": _chat_user(user["id"])})
+        if path == "/api/chat/messages":
+            chat_id = self._param("chat_id").strip()
+            member = one(
+                """SELECT m.active FROM chat_members m JOIN chats c ON c.id = m.chat_id
+                   WHERE m.chat_id = ? AND m.user_id = ? AND c.type = 'direct'""",
+                (chat_id, user["id"]),
+            )
+            if not member or not member["active"]:
+                return self._fail("нет доступа к этому чату", 403)
+            try:
+                after = max(0, int(self._param("after", "0") or 0))
+            except ValueError:
+                return self._fail("некорректный номер сообщения", 400)
+            rows = query(
+                """SELECT id, sender_id, text, image_data, track_json, created_at
+                   FROM chat_messages WHERE chat_id = ? AND id > ?
+                   ORDER BY id DESC LIMIT 100""",
+                (chat_id, after),
+            )
+            messages = []
+            for row in reversed(rows):
+                item = dict(row)
+                item["sender"] = _chat_user(row["sender_id"])
+                try:
+                    item["track"] = json.loads(item.pop("track_json")) if item["track_json"] else None
+                except ValueError:
+                    item["track"] = None
+                item["image"] = item.pop("image_data")
+                messages.append(item)
+            return self._json({"messages": messages})
+        return self._fail("нет такого метода: %s" % path, 404)
+
+    def chat_post(self, path: str, body: dict) -> None:
+        user = self._user()
+        if not user:
+            return self._fail("нужно войти", 401)
+        if path == "/api/chat/create":
+            username = str(body.get("username") or "").strip()
+            peer = one(
+                """SELECT id FROM users WHERE lower(username) = lower(?)
+                   AND email_verified = 1""",
+                (username,),
+            )
+            if not peer or peer["id"] == user["id"]:
+                return self._fail("пользователь не найден", 404)
+            low, high = sorted((user["id"], peer["id"]))
+            chat_id = "dm:%d:%d" % (low, high)
+            execute(
+                "INSERT OR IGNORE INTO chats (id, name, type, created_by, created_at) VALUES (?,?,?,?,?)",
+                (chat_id, "", "direct", user["id"], iso()),
+            )
+            for member_id in (low, high):
+                execute(
+                    """INSERT INTO chat_members (chat_id, user_id, active, joined_at)
+                       VALUES (?,?,1,?) ON CONFLICT(chat_id,user_id)
+                       DO UPDATE SET active=1""",
+                    (chat_id, member_id, iso()),
+                )
+            return self._json({"ok": True, "chat_id": chat_id})
+        if path == "/api/chat/send":
+            chat_id = str(body.get("chat_id") or "").strip()
+            member = one(
+                """SELECT m.active FROM chat_members m JOIN chats c ON c.id = m.chat_id
+                   WHERE m.chat_id = ? AND m.user_id = ? AND c.type = 'direct'""",
+                (chat_id, user["id"]),
+            )
+            if not member or not member["active"]:
+                return self._fail("нет доступа к этому чату", 403)
+            text = str(body.get("text") or "").strip()
+            image = str(body.get("image") or "")
+            track = body.get("track")
+            if len(text) > 4000:
+                return self._fail("сообщение слишком длинное", 413)
+            if image and (len(image) > 3_500_000 or not image.startswith("data:image/")):
+                return self._fail("изображение слишком большое или имеет неверный формат", 413)
+            if track is not None and not isinstance(track, dict):
+                return self._fail("некорректный трек", 400)
+            if not text and not image and track is None:
+                return self._fail("сообщение пустое", 400)
+            msg_id = execute(
+                """INSERT INTO chat_messages (chat_id, sender_id, text, image_data, track_json, created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (chat_id, user["id"], text, image,
+                 json.dumps(track, ensure_ascii=False) if track is not None else "", iso()),
+            )
+            return self._json({"ok": True, "id": msg_id})
+        return self._fail("нет такого метода: %s" % path, 404)
+
     def api_get(self, path: str) -> None:
+        if path.startswith("/api/chat/"):
+            return self.chat_get(path)
         if path == "/api/auth/me":
             user = self._user()
             return self._json({"user": public_user(user) if user else None, "version": APP_VERSION})
@@ -1432,9 +1638,12 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- POST /api/auth ----------
 
     def api_post(self, path: str) -> None:
-        body = self._body()
+        body = self._body(limit=4 * 1024 * 1024 if path == "/api/chat/send" else 64 * 1024)
         if body is None:
             return self._fail("запрос слишком большой", 413)
+
+        if path.startswith("/api/chat/"):
+            return self.chat_post(path, body)
 
         if path == "/api/auth/register":
             username = str(body.get("username") or "").strip()

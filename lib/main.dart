@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'dart:ui' show PlatformDispatcher;
@@ -103,7 +102,7 @@ AppState? _liveState;
 
 /// Builds the player state. It is created only after a session exists,
 /// so it always loads the state of the right account.
-AppState _buildAppState(Persistence persistence,
+AppState _buildAppState(Persistence persistence, AuthService auth,
     {String? registeredDisplayName}) {
   final node = NodeService(persistence);
   final audio = AudioService();
@@ -117,6 +116,7 @@ AppState _buildAppState(Persistence persistence,
     meta: meta,
     lyricsService: lyrics,
     audio: audio,
+    auth: auth,
     registeredDisplayName: registeredDisplayName,
   );
 }
@@ -309,7 +309,7 @@ class _RootViewState extends State<_RootView> {
 
   void _enter() {
     _showAuthSuccess = false;
-    final state = _buildAppState(widget.persistence,
+    final state = _buildAppState(widget.persistence, _auth,
         registeredDisplayName: _auth.displayName);
     _liveState = state;
     unawaited(state.init());

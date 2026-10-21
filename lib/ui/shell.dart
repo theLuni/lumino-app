@@ -16,6 +16,7 @@ import 'design.dart';
 import 'fullscreen.dart';
 import 'onboarding.dart';
 import 'pages.dart';
+import 'pages/chats.dart';
 import 'queue_panel.dart';
 
 class LuminoShell extends StatefulWidget {
@@ -330,6 +331,7 @@ class _MobileNavBar extends StatelessWidget {
       ('home', 'home', 'Home'),
       ('search', 'search', 'Search'),
       ('library', 'library', 'Library'),
+      ('chats', 'chats', 'Chats'),
       ('profile', 'user', 'Profile'),
       ('settings', 'gear', 'Settings'),
     ];
@@ -458,6 +460,13 @@ class _MobilePlayerBar extends StatelessWidget {
                       iconSize: 17,
                       tooltip: 'Next',
                       onTap: () => state.next(),
+                    ),
+                    IconAction(
+                      icon: 'share',
+                      size: 30,
+                      iconSize: 16,
+                      tooltip: 'Share Track',
+                      onTap: () => shareTrackInChat(context, state, track),
                     ),
                   ],
                 ),
@@ -602,6 +611,7 @@ class ShelfSidebar extends StatelessWidget {
       ['home', 'home', 'Home'],
       ['search', 'search', 'Search'],
       ['library', 'library', 'Library'],
+      ['chats', 'chats', 'Chats'],
       ['settings', 'gear', 'Settings'],
     ];
     return GestureDetector(
@@ -925,31 +935,39 @@ class _MainPanelState extends State<_MainPanel> {
       clipBehavior: Clip.antiAlias,
       child: Stack(children: [
         Positioned.fill(
-          child: SingleChildScrollView(
-            controller: _scroll,
-            padding: EdgeInsets.only(top: mobile ? 44 : 0, bottom: 20),
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 280),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeIn,
-              // Default layout centres the children vertically: while the old
-              // (taller) page fades out, a shorter new page was shifted down.
-              layoutBuilder: (current, previous) => Stack(
-                alignment: Alignment.topCenter,
-                children: [...previous, if (current != null) current],
-              ),
-              transitionBuilder: (child, animation) => FadeTransition(
-                opacity: animation,
-                child: SlideTransition(
-                  position: Tween<Offset>(
-                          begin: const Offset(0, 0.012), end: Offset.zero)
-                      .animate(animation),
-                  child: child,
+          child: state.pageName == 'chats'
+              ? Padding(
+                  padding: EdgeInsets.only(top: mobile ? 44 : 50),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 280),
+                    child: buildPage(state, onSignOut: widget.onSignOut),
+                  ),
+                )
+              : SingleChildScrollView(
+                  controller: _scroll,
+                  padding: EdgeInsets.only(top: mobile ? 44 : 0, bottom: 20),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 280),
+                    switchInCurve: Curves.easeOutCubic,
+                    switchOutCurve: Curves.easeIn,
+                    // Default layout centres the children vertically: while the old
+                    // (taller) page fades out, a shorter new page was shifted down.
+                    layoutBuilder: (current, previous) => Stack(
+                      alignment: Alignment.topCenter,
+                      children: [...previous, if (current != null) current],
+                    ),
+                    transitionBuilder: (child, animation) => FadeTransition(
+                      opacity: animation,
+                      child: SlideTransition(
+                        position: Tween<Offset>(
+                                begin: const Offset(0, 0.012), end: Offset.zero)
+                            .animate(animation),
+                        child: child,
+                      ),
+                    ),
+                    child: buildPage(state, onSignOut: widget.onSignOut),
+                  ),
                 ),
-              ),
-              child: buildPage(state, onSignOut: widget.onSignOut),
-            ),
-          ),
         ),
         Positioned(
           left: 0,
@@ -972,93 +990,102 @@ class _TopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final back = pageHasBack(state.pageName);
-    return Listener(
-      onPointerSignal: (event) {
-        if (event is PointerScrollEvent && scroll.hasClients) {
-          scroll.jumpTo((scroll.offset + event.scrollDelta.dy)
-              .clamp(0.0, scroll.position.maxScrollExtent)
-              .toDouble());
-        }
-      },
-      child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onPanStart: mobile ? null : (_) => windowManager.startDragging(),
-        onDoubleTap: mobile
-            ? null
-            : () async {
-                if (await windowManager.isMaximized()) {
-                  await windowManager.unmaximize();
-                } else {
-                  await windowManager.maximize();
-                }
-              },
-        child: Padding(
-          padding: EdgeInsets.only(
-              left: mobile ? 14 : 24,
-              right: mobile ? 14 : 170,
-              top: mobile ? 5 : 9),
-          child: Row(children: [
-            if (mobile)
-              if (back)
-                TapArea(
-                  onTap: state.back,
-                  child: Container(
-                    width: 36,
-                    height: 36,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: ThemeScope.of(context).light
-                          ? const Color(0x12000000)
-                          : const Color(0x12FFFFFF),
-                      borderRadius: BorderRadius.circular(11),
-                    ),
-                    child: const LIcon('back', size: 17),
-                  ),
-                )
-              else
-                SizedBox(
-                  width: 34,
-                  height: 34,
-                  child: Image.asset('assets/logo.png', fit: BoxFit.contain),
-                ),
-            if (mobile) ...[
-              const SizedBox(width: 10),
-              Text(
-                _mobilePageTitle(state.pageName),
-                style:
-                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-              ),
-            ],
-            if (!mobile && back)
-              TapArea(
-                onTap: state.back,
-                child: Container(
-                  height: 32,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  decoration: BoxDecoration(
-                    color: ThemeScope.of(context).light
-                        ? const Color(0x12000000)
-                        : const Color(0x12FFFFFF),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    const LIcon('back', size: 16),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Back',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                        color: ThemeScope.of(context).foreground,
+    return AnimatedBuilder(
+      animation: scroll,
+      builder: (context, _) {
+        final back = pageHasBack(state.pageName) &&
+            !(state.pageName == 'release' &&
+                scroll.hasClients &&
+                scroll.offset > 12);
+        return Listener(
+          onPointerSignal: (event) {
+            if (event is PointerScrollEvent && scroll.hasClients) {
+              scroll.jumpTo((scroll.offset + event.scrollDelta.dy)
+                  .clamp(0.0, scroll.position.maxScrollExtent)
+                  .toDouble());
+            }
+          },
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onPanStart: mobile ? null : (_) => windowManager.startDragging(),
+            onDoubleTap: mobile
+                ? null
+                : () async {
+                    if (await windowManager.isMaximized()) {
+                      await windowManager.unmaximize();
+                    } else {
+                      await windowManager.maximize();
+                    }
+                  },
+            child: Padding(
+              padding: EdgeInsets.only(
+                  left: mobile ? 14 : 24,
+                  right: mobile ? 14 : 170,
+                  top: mobile ? 5 : 9),
+              child: Row(children: [
+                if (mobile)
+                  if (back)
+                    TapArea(
+                      onTap: state.back,
+                      child: Container(
+                        width: 36,
+                        height: 36,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: ThemeScope.of(context).light
+                              ? const Color(0x12000000)
+                              : const Color(0x12FFFFFF),
+                          borderRadius: BorderRadius.circular(11),
+                        ),
+                        child: const LIcon('back', size: 17),
                       ),
+                    )
+                  else
+                    SizedBox(
+                      width: 34,
+                      height: 34,
+                      child:
+                          Image.asset('assets/logo.png', fit: BoxFit.contain),
                     ),
-                  ]),
-                ),
-              ),
-          ]),
-        ),
-      ),
+                if (mobile) ...[
+                  const SizedBox(width: 10),
+                  Text(
+                    _mobilePageTitle(state.pageName),
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
+                ],
+                if (!mobile && back)
+                  TapArea(
+                    onTap: state.back,
+                    child: Container(
+                      height: 32,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: ThemeScope.of(context).light
+                            ? const Color(0x12000000)
+                            : const Color(0x12FFFFFF),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        const LIcon('back', size: 16),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Back',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                            color: ThemeScope.of(context).foreground,
+                          ),
+                        ),
+                      ]),
+                    ),
+                  ),
+              ]),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -1221,20 +1248,10 @@ class _PlayerLeft extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(children: [
       if (track != null)
-        HoverBuilder(
-          builder: (context, hovered) => GestureDetector(
-            onTap: state.openFull,
-            child: Tooltip(
-              message: 'Full-screen player',
-              waitDuration: const Duration(milliseconds: 500),
-              child: AnimatedScale(
-                scale: hovered ? 1.045 : 1,
-                duration: const Duration(milliseconds: 220),
-                child: CoverArt(
-                    track: track, size: 40, radius: 6, onTap: state.openFull),
-              ),
-            ),
-          ),
+        GestureDetector(
+          onTap: state.openFull,
+          child: CoverArt(
+              track: track, size: 40, radius: 6, onTap: state.openFull),
         ),
       const SizedBox(width: 12),
       Expanded(

@@ -145,8 +145,10 @@ class HomePage extends StatelessWidget {
       ]));
     }
 
-    if (state.genreRecTracks.isNotEmpty) {
-      final genreKey = state.reg('genre-recs', state.genreRecTracks);
+    final genreTracks =
+        state.genreRecTracks.where((track) => track.cover.isNotEmpty).toList();
+    if (genreTracks.isNotEmpty) {
+      final genreKey = state.reg('genre-recs', genreTracks);
       sections.add(SectionTitle(
         title: state.genreRecLabel.isEmpty
             ? 'More in this genre'
@@ -154,14 +156,14 @@ class HomePage extends StatelessWidget {
         icon: const LIcon('spark', size: 20),
       ));
       sections.add(CardsRow(children: [
-        for (final track in state.genreRecTracks)
+        for (final track in genreTracks)
           TrackCard(
             track: track,
             width: double.infinity,
             current: state.current?.id == track.id,
             playing: state.playing,
-            onPlay: () => state.playIds(state.lists[genreKey] ?? const [],
-                state.genreRecTracks.indexOf(track)),
+            onPlay: () => state.playIds(
+                state.lists[genreKey] ?? const [], genreTracks.indexOf(track)),
             onArtist: (name) => state.go('artist', arg: name),
           ),
       ]));
@@ -324,7 +326,7 @@ class _QuickTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return _QuickShell(
       onTap: onTap,
-      leading: CoverArt(track: track, radius: 0),
+      leading: CoverArt(track: track, radius: 0, openArtwork: false),
       title: track.title,
       subtitle: track.artists.join(', '),
     );

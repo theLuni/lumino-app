@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 
 import 'audio_service.dart';
+import 'auth_service.dart';
 import 'catalog_service.dart';
 import 'lyrics_service.dart';
 import 'meta_service.dart';
@@ -61,6 +62,7 @@ class AppState extends ChangeNotifier {
     required this.meta,
     required this.lyricsService,
     required this.audio,
+    required this.auth,
     this.registeredDisplayName,
   });
 
@@ -70,6 +72,7 @@ class AppState extends ChangeNotifier {
   final MetaService meta;
   final LyricsService lyricsService;
   final AudioService audio;
+  final AuthService auth;
 
   /// The display name entered during registration on the server (if any).
   /// Used only as a fallback to pre-fill the profile nickname the first time
@@ -1384,7 +1387,10 @@ class AppState extends ChangeNotifier {
     title = title.trim();
     artist = artist.trim();
     if (title.isEmpty) return null;
-    if (catalogTrack != null && catalogTrack.playable) {
+    final directTrackMatches = catalogTrack != null &&
+        compactKey(catalogTrack.title) == compactKey(title) &&
+        catalogTrack.artists.any((name) => sameArtist(name, artist));
+    if (catalogTrack != null && catalogTrack.playable && directTrackMatches) {
       final direct = catalogTrack.copy();
       direct.cover = cover;
       direct.coverSource = '';
@@ -1403,44 +1409,14 @@ class AppState extends ChangeNotifier {
     } catch (_) {
       results = [];
     }
-    final wantedTitle = compactKey(title);
-    final wantedArtist = compactKey(artist);
-    final ranked = <({Track item, int score})>[];
-    for (final item in results) {
-      if (!item.playable) continue;
-      final itemTitle = compactKey(item.title);
-      final itemArtist =
-          compactKey(item.artists.isNotEmpty ? item.artists.first : '');
-      final itemAlbum = compactKey(item.album);
-      var score = 0;
-      if (itemTitle == wantedTitle) {
-        score += 12;
-      } else if (wantedTitle.length >= 5 &&
-          (itemTitle.contains(wantedTitle) ||
-              wantedTitle.contains(itemTitle))) {
-        score += 6;
-      }
-      if (wantedArtist.isNotEmpty && itemArtist == wantedArtist) {
-        score += 8;
-      } else if (wantedArtist.isNotEmpty &&
-          itemArtist.isNotEmpty &&
-          (itemArtist.contains(wantedArtist) ||
-              wantedArtist.contains(itemArtist))) {
-        score += 4;
-      } else if (sameArtist(
-          artist, item.artists.isNotEmpty ? item.artists.first : '')) {
-        score += 8;
-      }
-      if (album.isNotEmpty && itemAlbum == compactKey(album)) score += 3;
-      ranked.add((item: item, score: score));
-    }
-    ranked.sort((a, b) => b.score.compareTo(a.score));
-    if (ranked.isEmpty || ranked.first.score < 14) {
+    final match =
+        matchPlayableTrack(results, title: title, artist: artist, album: album);
+    if (match == null) {
       if (!quiet)
         showToast('No playable audio was found for this track in the catalog.');
       return null;
     }
-    final track = ranked.first.item.copy();
+    final track = match.copy();
     track.cover = cover;
     track.coverSource = '';
     if (album.isNotEmpty && (track.album.isEmpty || track.album == track.title))
@@ -1461,11 +1437,17 @@ class AppState extends ChangeNotifier {
     final song = release.tracks[index];
     final key = releaseTrackKey(release, artist, index);
     final cached = _releaseTrackCache[key];
-    if (cached != null && byId.containsKey(cached.id)) return cached;
+    final wantedArtist = song.artist.isEmpty ? artist : song.artist;
+    if (cached != null && byId.containsKey(cached.id)) {
+      final matches = compactKey(cached.title) == compactKey(song.title) &&
+          cached.artists.any((credit) => sameArtist(credit, wantedArtist));
+      if (matches) return cached;
+      _releaseTrackCache.remove(key);
+    }
     if (!quiet) showToast('Looking for audio: ${song.title}');
     final track = await resolveCatalogTrack(
       title: song.title,
-      artist: song.artist.isEmpty ? artist : song.artist,
+      artist: wantedArtist,
       album: release.name,
       cover: song.cover.isNotEmpty ? song.cover : release.cover,
       catalogTrack: song.catalog,
@@ -1491,7 +1473,7 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> playRelease(Release release, String artist,
-      {int start = 0}) async {
+      {int start = 0, bool strictStart = false}) async {
     if (release.tracks.isEmpty) {
       final filled = await fillRelease(release);
       release = filled;
@@ -1501,17 +1483,20 @@ class AppState extends ChangeNotifier {
       return;
     }
     final session = ++_relSession;
-    showToast(
-        'Looking for audio: ${release.tracks[clampInt(start, 0, release.tracks.length - 1)].title}');
+    final requested = clampInt(start, 0, release.tracks.length - 1);
+    showToast('Looking for audio: ${release.tracks[requested].title}');
     Track? first;
-    var at = start;
+    var at = requested;
     for (; at < release.tracks.length && first == null; at++) {
       if (session != _relSession) return;
       first = await releaseTrack(release, artist, at, quiet: true);
+      if (strictStart) break;
     }
     if (session != _relSession) return;
     if (first == null) {
-      showToast('No playable audio was found for this release in the catalog.');
+      showToast(strictStart
+          ? 'No playable audio was found for "${release.tracks[requested].title}".'
+          : 'No playable audio was found for this release in the catalog.');
       return;
     }
     final lead = first;

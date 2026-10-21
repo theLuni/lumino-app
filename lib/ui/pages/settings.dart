@@ -458,36 +458,37 @@ class _QualitySeg extends StatelessWidget {
       ('normal', 'Normal', '192 kbps'),
       ('high', 'High', '320 kbps'),
     ];
-    return Container(
-      height: 46,
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: scope.light ? const Color(0x0D17181C) : const Color(0x0FFFFFFF),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: scope.stroke),
-      ),
-      child: Row(children: [
-        for (final option in options)
-          Expanded(
+    return Row(children: [
+      for (final option in options)
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.only(right: 8),
             child: HoverBuilder(
               builder: (context, hovered) => GestureDetector(
                 onTap: () => state.setQuality(option.$1),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 150),
+                  height: 58,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     color: state.settings.quality == option.$1
-                        ? (scope.light
-                            ? const Color(0xFF252834)
-                            : const Color(0xE6FFFFFF))
+                        ? (scope.light ? Colors.white : const Color(0x1FFFFFFF))
                         : (hovered
                             ? (scope.light
                                 ? const Color(0x0D17181C)
-                                : const Color(0x12FFFFFF))
+                                : const Color(0x0FFFFFFF))
                             : Colors.transparent),
-                    borderRadius: BorderRadius.circular(9),
+                    borderRadius: BorderRadius.circular(13),
+                    border: Border.all(
+                      color: state.settings.quality == option.$1
+                          ? (scope.light
+                              ? const Color(0xFF252834)
+                              : const Color(0xB3FFFFFF))
+                          : scope.stroke,
+                      width: state.settings.quality == option.$1 ? 1.3 : 1,
+                    ),
                   ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
                     Text(
                       option.$2,
                       style: TextStyle(
@@ -495,19 +496,17 @@ class _QualitySeg extends StatelessWidget {
                         fontWeight: FontWeight.w600,
                         color: state.settings.quality == option.$1
                             ? (scope.light
-                                ? Colors.white
-                                : const Color(0xFF111113))
+                                ? const Color(0xFF252834)
+                                : Colors.white)
                             : scope.foreground,
                       ),
                     ),
-                    const SizedBox(width: 7),
+                    const SizedBox(height: 3),
                     Text(
                       option.$3,
                       style: TextStyle(
                         fontSize: 11.5,
-                        color: state.settings.quality == option.$1
-                            ? const Color(0xB3FFFFFF)
-                            : scope.mutedForeground,
+                        color: scope.mutedForeground,
                       ),
                     ),
                   ]),
@@ -515,8 +514,8 @@ class _QualitySeg extends StatelessWidget {
               ),
             ),
           ),
-      ]),
-    );
+        ),
+    ]);
   }
 }
 
@@ -716,17 +715,7 @@ class _EqCardState extends State<_EqCard> {
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: scope.light
-                  ? const Color(0x0D000000)
-                  : const Color(0x12FFFFFF),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: LIcon('volume', size: 18, color: scope.foreground),
-          ),
+          LIcon('volume', size: 20, color: scope.foreground),
           const SizedBox(width: 13),
           Expanded(
             child:
