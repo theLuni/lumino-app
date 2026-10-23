@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -8,7 +9,6 @@ import '../../core/utils.dart';
 import '../actions.dart';
 import '../design.dart';
 import '../lazy_track_rows.dart';
-import 'home.dart';
 
 class ArtistPage extends StatefulWidget {
   const ArtistPage({super.key, required this.state, required this.name});
@@ -95,8 +95,10 @@ class _ArtistPageState extends State<ArtistPage> {
   // (always 0 for track ids) shuffled the list randomly on each rebuild.
   List<Track> get _popular => _catalog
       .where((track) =>
-          !sameArtist(track.primary, 'FENDIGLOCK') ||
-          !const {'ботанический сад', 'много дел'}.contains(norm(track.title)))
+          track.cover.isNotEmpty &&
+          (!sameArtist(track.primary, 'FENDIGLOCK') ||
+              !const {'ботанический сад', 'много дел'}
+                  .contains(norm(track.title))))
       .take(5)
       .toList();
 
@@ -394,11 +396,19 @@ class MixPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tracks = state.tracksForList(listKey);
-    if (tracks.isEmpty) {
+    final allTracks = state.tracksForList(listKey);
+    if (allTracks.isEmpty) {
       return const EmptyState(
           text:
               'This mix is no longer available. Go back to Home and open it again.');
+    }
+    state.ensureCovers(allTracks, priority: true);
+    final tracks = allTracks.where((track) => track.cover.isNotEmpty).toList();
+    if (tracks.isEmpty) {
+      if (allTracks.every((track) => state.noCover.contains(track.id))) {
+        return const EmptyState(text: 'No mix tracks have available cover art.');
+      }
+      return const EmptyState(text: 'Preparing daily mix covers…');
     }
     final match = cachedRe(r'mix(\d+)').firstMatch(listKey);
     final index = match == null ? 0 : int.parse(match.group(1)!);
@@ -406,7 +416,6 @@ class MixPage extends StatelessWidget {
     final lead =
         tracks.where((t) => t.cover.isNotEmpty).firstOrNull ?? tracks.first;
     final ids = tracks.map((t) => t.id).toList();
-    state.ensureCovers(tracks.take(10), priority: true);
 
     final compact = MediaQuery.sizeOf(context).width < 600;
     return Padding(
@@ -506,11 +515,17 @@ class _ReleasePageState extends State<ReleasePage> {
   Release? _filled;
   int? _color;
   bool _fillDone = false;
+  Timer? _highlightTimer;
+  bool _highlightActive = false;
   Release get _release => _filled ?? widget.arg.release;
 
   @override
   void initState() {
     super.initState();
+    _highlightActive = widget.arg.highlightTrack.isNotEmpty;
+    if (_highlightActive && widget.arg.release.type == 'single') {
+      _scheduleSingleHighlightTimeout();
+    }
     _loadColor();
     if (_release.tracks.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -519,15 +534,30 @@ class _ReleasePageState extends State<ReleasePage> {
           if (mounted && release.tracks.isNotEmpty) {
             setState(() => _filled = release);
             _ensureCovers();
+            if (_highlightActive && release.type == 'single') {
+              _scheduleSingleHighlightTimeout();
+            }
           }
         } catch (_) {}
-        // Without this flag a failed/empty fetch left the spinner on forever.
         if (mounted) setState(() => _fillDone = true);
       });
     } else {
       _fillDone = true;
       _ensureCovers();
     }
+  }
+
+  @override
+  void dispose() {
+    _highlightTimer?.cancel();
+    super.dispose();
+  }
+
+  void _scheduleSingleHighlightTimeout() {
+    _highlightTimer?.cancel();
+    _highlightTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _highlightActive = false);
+    });
   }
 
   Future<void> _loadColor() async {
@@ -705,6 +735,9 @@ class _ReleasePageState extends State<ReleasePage> {
                 album: _release.name,
                 fallbackArtist: artist,
                 current: _isCurrent(_release.tracks[i]),
+                highlighted: _highlightActive &&
+                    compactKey(_release.tracks[i].title) ==
+                        compactKey(widget.arg.highlightTrack),
                 playing: state.playing,
                 onPlay: () => state.playRelease(_release, artist,
                     start: i, strictStart: true),
@@ -729,6 +762,7 @@ class _ReleaseRow extends StatefulWidget {
     required this.album,
     required this.fallbackArtist,
     required this.current,
+    required this.highlighted,
     required this.playing,
     required this.onPlay,
     required this.onArtist,
@@ -742,6 +776,7 @@ class _ReleaseRow extends StatefulWidget {
   final String album;
   final String fallbackArtist;
   final bool current;
+  final bool highlighted;
   final bool playing;
   final VoidCallback onPlay;
   final ValueChanged<String> onArtist;
@@ -785,7 +820,11 @@ class _ReleaseRowState extends State<_ReleaseRow> {
           height: 58,
           padding: const EdgeInsets.symmetric(horizontal: 8),
           decoration: BoxDecoration(
-            color: _hovered ? const Color(0x0FFFFFFF) : Colors.transparent,
+            color: widget.highlighted
+                ? const Color(0x2EFFFFFF)
+                : _hovered
+                    ? const Color(0x0FFFFFFF)
+                    : Colors.transparent,
             borderRadius: BorderRadius.circular(10),
           ),
           child: Row(children: [

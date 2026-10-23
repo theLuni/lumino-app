@@ -11,7 +11,15 @@ Future<void> openTrackRelease(AppState state, Track track) async {
   final release = await state.releaseForTrack(track);
   if (state.fullScreen) state.closeFull();
   if (release != null) {
-    state.go('release', arg: ReleaseArg(release, artist: track.primary));
+    state.go(
+      'release',
+      arg: ReleaseArg(
+        release,
+        artist:
+            release.artistName.isNotEmpty ? release.artistName : track.primary,
+        highlightTrack: track.title,
+      ),
+    );
   } else if (track.primary.isNotEmpty) {
     state.go('artist', arg: track.primary);
   }

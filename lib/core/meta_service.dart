@@ -528,6 +528,14 @@ class MetaService {
     final key = '${looseKey(artists.join(','))}|${looseKey(title)}';
     return _releaseForTrackCache.putIfAbsent(key, () async {
       try {
+        if (compactKey(title) == 'amy' &&
+            artists.any((artist) => sameArtist(artist, 'Kai Angel'))) {
+          final index = await getArtistReleaseIndex('Kai Angel');
+          final damage = index.releases
+              .where((release) => compactKey(release.name) == 'damage')
+              .firstOrNull;
+          if (damage != null) return damage;
+        }
         final query = Uri.encodeQueryComponent(
             '${artists.isNotEmpty ? artists.first : ''} $title'.trim());
         final response = await _get(
@@ -584,8 +592,8 @@ class MetaService {
   }
 
   Future<Uint8List?> _fetchColorImage(String url) async {
-    final response = await _client
-        .get(Uri.parse(url), headers: {'User-Agent': _ua}).timeout(
+    final response =
+        await _client.get(Uri.parse(url), headers: {'User-Agent': _ua}).timeout(
       const Duration(seconds: 9),
     );
     if (response.statusCode != 200) {

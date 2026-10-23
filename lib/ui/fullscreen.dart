@@ -302,7 +302,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
 
     return Row(children: [
       Transform.translate(
-        offset: const Offset(0, 4),
+        offset: const Offset(0, 10),
         child: _Pill(
           onTap: widget.state.closeFull,
           child: const LIcon('chevD', size: 15, color: Colors.white),
@@ -696,28 +696,39 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
               builder: (context, fill, child) => Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
-                children: visibleLines
-                    .map((text) => ShaderMask(
-                          blendMode: BlendMode.srcIn,
-                          shaderCallback: (bounds) => LinearGradient(
-                            begin: Alignment.centerLeft,
-                            end: Alignment.centerRight,
-                            stops: [0, fill, fill, 1],
-                            colors: const [
-                              Colors.white,
-                              Colors.white,
-                              Color(0x6BFFFFFF),
-                              Color(0x6BFFFFFF)
-                            ],
-                          ).createShader(bounds),
-                          child: Text(text, style: style, softWrap: false),
-                        ))
-                    .toList(),
+                children: [
+                  for (var i = 0; i < visibleLines.length; i++)
+                    _highlightedLyricLine(
+                      visibleLines[i],
+                      style,
+                      (fill * visibleLines.length - i)
+                          .clamp(0.0, 1.0)
+                          .toDouble(),
+                    ),
+                ],
               ),
             );
           },
         );
       },
+    );
+  }
+
+  Widget _highlightedLyricLine(String text, TextStyle style, double fill) {
+    return ShaderMask(
+      blendMode: BlendMode.srcIn,
+      shaderCallback: (bounds) => LinearGradient(
+        begin: Alignment.centerLeft,
+        end: Alignment.centerRight,
+        stops: [0, fill, fill, 1],
+        colors: const [
+          Colors.white,
+          Colors.white,
+          Color(0x6BFFFFFF),
+          Color(0x6BFFFFFF)
+        ],
+      ).createShader(Rect.fromLTWH(0, 0, bounds.width, bounds.height)),
+      child: Text(text, style: style, softWrap: false),
     );
   }
 
@@ -801,10 +812,10 @@ class _FullProgressState extends State<_FullProgress> {
               },
               child: SizedBox(
                 height: 18,
-                child: CustomPaint(
-                  painter:
-                      _ProgressPainter(fraction: fraction, hover: _dragging),
-                  size: Size(constraints.maxWidth, 18),
+                child: _SmoothProgressBar(
+                  fraction: fraction,
+                  dragging: _dragging,
+                  width: constraints.maxWidth,
                 ),
               ),
             );
@@ -824,6 +835,74 @@ class _FullProgressState extends State<_FullProgress> {
           ]),
         ]);
       },
+    );
+  }
+}
+
+class _SmoothProgressBar extends StatefulWidget {
+  const _SmoothProgressBar({
+    required this.fraction,
+    required this.dragging,
+    required this.width,
+  });
+
+  final double fraction;
+  final bool dragging;
+  final double width;
+
+  @override
+  State<_SmoothProgressBar> createState() => _SmoothProgressBarState();
+}
+
+class _SmoothProgressBarState extends State<_SmoothProgressBar>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late Animation<double> _fraction;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 160),
+      value: 1,
+    );
+    _fraction = AlwaysStoppedAnimation(widget.fraction);
+  }
+
+  @override
+  void didUpdateWidget(covariant _SmoothProgressBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.dragging) {
+      _controller.stop();
+      _fraction = AlwaysStoppedAnimation(widget.fraction);
+    } else if (widget.fraction != oldWidget.fraction) {
+      final begin = _fraction.value;
+      _controller.stop();
+      _fraction = Tween<double>(begin: begin, end: widget.fraction)
+          .chain(CurveTween(curve: Curves.easeOutCubic))
+          .animate(_controller);
+      unawaited(_controller.forward(from: 0));
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) => CustomPaint(
+        painter: _ProgressPainter(
+          fraction: _fraction.value,
+          hover: widget.dragging,
+        ),
+        size: Size(widget.width, 18),
+      ),
     );
   }
 }
@@ -849,9 +928,11 @@ class _ProgressPainter extends CustomPainter {
     if (filled > 0.5) {
       canvas.drawLine(Offset(0, cy), Offset(filled, cy), played);
     }
-    if (hover) {
-      canvas.drawCircle(Offset(filled, cy), 6, Paint()..color = Colors.white);
-    }
+    canvas.drawCircle(
+      Offset(filled, cy),
+      hover ? 6 : 5,
+      Paint()..color = Colors.white,
+    );
   }
 
   @override
@@ -873,25 +954,41 @@ class _PillState extends State<_Pill> {
 
   @override
   Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: widget.onTap != null
-          ? SystemMouseCursors.click
-          : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          width: 34,
-          height: 28,
-          padding: EdgeInsets.zero,
-          decoration: BoxDecoration(
-            color: _hovered ? const Color(0x24FFFFFF) : const Color(0x14FFFFFF),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: const Color(0x1AFFFFFF)),
+    return Tooltip(
+      message: 'Hide player',
+      waitDuration: const Duration(milliseconds: 500),
+      child: GlassPanel(
+        dark: true,
+        radius: 10,
+        padding: const EdgeInsets.symmetric(horizontal: 2),
+        child: SizedBox(
+          height: 32,
+          child: MouseRegion(
+            cursor: widget.onTap != null
+                ? SystemMouseCursors.click
+                : SystemMouseCursors.basic,
+            onEnter: (_) => setState(() => _hovered = true),
+            onExit: (_) => setState(() => _hovered = false),
+            child: GestureDetector(
+              onTap: widget.onTap,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 120),
+                width: 34,
+                height: 28,
+                decoration: BoxDecoration(
+                  color:
+                      _hovered ? const Color(0x1AFFFFFF) : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Center(
+                  child: IconTheme(
+                    data: const IconThemeData(color: Color(0xBFFFFFFF)),
+                    child: widget.child,
+                  ),
+                ),
+              ),
+            ),
           ),
-          child: Center(child: widget.child),
         ),
       ),
     );

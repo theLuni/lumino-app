@@ -16,6 +16,16 @@ class ChatShareArg {
   final int nonce;
 }
 
+Map<String, dynamic> _trackMessageData(Track track) => {
+      'id': track.id,
+      'title': track.title,
+      'artists': track.artists,
+      'album': track.album,
+      'cover': track.cover,
+      'duration': track.duration,
+      'releaseType': track.releaseType,
+    };
+
 Future<void> shareTrackInChat(
     BuildContext context, AppState state, Track track) async {
   final confirmed = await confirmDialog(
@@ -225,14 +235,7 @@ class _ChatsPageState extends State<ChatsPage> {
       if (shareTrack != null) {
         await widget.state.auth.sendChatMessage(
           id,
-          track: {
-            'id': shareTrack.id,
-            'title': shareTrack.title,
-            'artists': shareTrack.artists,
-            'album': shareTrack.album,
-            'cover': shareTrack.cover,
-            'duration': shareTrack.duration,
-          },
+          track: _trackMessageData(shareTrack),
         );
         await _loadMessages();
       }
@@ -284,14 +287,7 @@ class _ChatsPageState extends State<ChatsPage> {
       final chatId = chat['id'] as String;
       await widget.state.auth.sendChatMessage(
         chatId,
-        track: {
-          'id': track.id,
-          'title': track.title,
-          'artists': track.artists,
-          'album': track.album,
-          'cover': track.cover,
-          'duration': track.duration,
-        },
+        track: _trackMessageData(track),
       );
       await _selectChat(chatId);
       widget.state.go('chats');
@@ -476,6 +472,7 @@ class _ChatsPageState extends State<ChatsPage> {
                                     me: _me ?? const <String, dynamic>{},
                                     onTrackTap: (track) =>
                                         openTrackRelease(widget.state, track),
+                                    onTrackPlay: widget.state.playSharedTrack,
                                   );
                                 },
                               ),
@@ -499,7 +496,8 @@ class _ChatsPageState extends State<ChatsPage> {
                           controller: _composer,
                           enabled: selected != null,
                           minLines: 1,
-                          maxLines: 3,
+                          maxLines: 1,
+                          textInputAction: TextInputAction.send,
                           onSubmitted: (_) => _sendText(),
                           decoration: InputDecoration(
                             hintText: selected == null
@@ -646,6 +644,7 @@ class _MessageBubble extends StatelessWidget {
     required this.onUserTap,
     required this.me,
     required this.onTrackTap,
+    required this.onTrackPlay,
   });
 
   final Map<String, dynamic> message;
@@ -653,6 +652,7 @@ class _MessageBubble extends StatelessWidget {
   final VoidCallback onUserTap;
   final Map<String, dynamic> me;
   final void Function(Track track) onTrackTap;
+  final Future<void> Function(Track track) onTrackPlay;
 
   @override
   Widget build(BuildContext context) {
@@ -712,6 +712,7 @@ class _MessageBubble extends StatelessWidget {
           if (track != null) ...[
             const SizedBox(height: 8),
             GestureDetector(
+              behavior: HitTestBehavior.opaque,
               onTap: () => onTrackTap(track),
               child: Container(
                 width: 300,
@@ -722,7 +723,10 @@ class _MessageBubble extends StatelessWidget {
                 ),
                 child: Row(children: [
                   CoverArt(
-                      track: track, size: 48, radius: 6, openArtwork: false),
+                      track: track,
+                      size: 48,
+                      radius: 6,
+                      openArtwork: false),
                   const SizedBox(width: 9),
                   Expanded(
                     child: Column(
@@ -743,7 +747,13 @@ class _MessageBubble extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  const LIcon('play', size: 16, color: Colors.white),
+                  IconAction(
+                    icon: 'play',
+                    size: 30,
+                    iconSize: 14,
+                    tooltip: 'Воспроизвести трек',
+                    onTap: () => onTrackPlay(track),
+                  ),
                 ]),
               ),
             ),

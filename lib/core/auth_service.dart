@@ -139,6 +139,18 @@ class AuthService {
 
   Future<Map<String, dynamic>> chatChats() => _call('GET', '/api/chat/chats');
 
+  Future<Map<String, dynamic>> publicUserProfile(String username) async {
+    final data = await _call(
+      'GET',
+      '/api/users/profile?username=${Uri.encodeQueryComponent(username)}',
+    );
+    final user = data['user'];
+    if (user is! Map) {
+      throw const FormatException('Public profile response is malformed.');
+    }
+    return user.map((key, value) => MapEntry(key.toString(), value));
+  }
+
   Future<List<Map<String, dynamic>>> searchChatUsers(String query) async {
     final data = await _call(
       'GET',

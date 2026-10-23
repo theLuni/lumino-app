@@ -25,8 +25,9 @@ bool pageHasBack(String name) => const {
 String pageIdentity(AppState state) {
   final arg = state.pageArg;
   if (arg is String) return '${state.pageName}:$arg';
-  if (arg is ReleaseArg)
-    return '${state.pageName}:${arg.release.name}:${arg.artist}';
+  if (arg is ReleaseArg) {
+    return '${state.pageName}:${arg.release.name}:${arg.artist}:${arg.highlightTrack}';
+  }
   if (arg is ChatShareArg) return 'chats:${arg.nonce}';
   if (arg is Map) return '${state.pageName}:${arg['username'] ?? ''}';
   return state.pageName;
@@ -61,7 +62,9 @@ Widget buildPage(AppState state, {required Future<void> Function() onSignOut}) {
               .map((key, value) => MapEntry(key.toString(), value))
           : <String, dynamic>{};
       return PublicUserProfilePage(
-          key: ValueKey('user-profile:${user['username'] ?? ''}'), user: user);
+          key: ValueKey('user-profile:${user['username'] ?? ''}'),
+          state: state,
+          user: user);
     case 'artist':
       final name = state.pageArg is String ? state.pageArg as String : '';
       return ArtistPage(
@@ -79,7 +82,7 @@ Widget buildPage(AppState state, {required Future<void> Function() onSignOut}) {
       }
       return ReleasePage(
         key: ValueKey(
-            'release:${arg.release.deezerId}:${arg.release.name}:${arg.artist}'),
+            'release:${arg.release.deezerId}:${arg.release.name}:${arg.artist}:${arg.highlightTrack}'),
         state: state,
         arg: arg,
       );

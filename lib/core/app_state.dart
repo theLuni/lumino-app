@@ -135,7 +135,9 @@ class AppState extends ChangeNotifier {
   NodeState nodeState = NodeState();
   ToastMessage? toastMessage;
   Timer? _toastTimer;
+  Timer? _dayRefreshTimer;
   int _toastSeq = 0;
+  int _dailySeed = 0;
 
   bool ready = false;
   int _startGeneration = 0;
@@ -181,6 +183,8 @@ class AppState extends ChangeNotifier {
   // -------------------------------------------------------------- lifecycle
 
   Future<void> init() async {
+    _dailySeed = daySeed();
+    _scheduleDailyRefresh();
     _nodeSubscription = node.changes.listen((change) {
       final previous = nodeState.active;
       nodeState = change.state;
@@ -203,16 +207,18 @@ class AppState extends ChangeNotifier {
     final saved = await persistence.loadState();
     final likedList = asList(saved['liked']);
     liked.addAll(likedList.map((v) => v.toString()));
-    if (saved['volume'] is num)
+    if (saved['volume'] is num) {
       volume = clampDouble(saved['volume'] as num, 0, 1);
+    }
     for (final name in asList(saved['savedArtists'])) {
       final value = name.toString().trim();
       if (value.isNotEmpty) savedArtists[norm(value)] = value;
     }
     for (final raw in asList(saved['plays'])) {
       final entry = PlayEntry.fromJson(asMap(raw));
-      if (entry.name.isNotEmpty && entry.count > 0)
+      if (entry.name.isNotEmpty && entry.count > 0) {
         plays[norm(entry.name)] = entry;
+      }
     }
     for (final id in asList(saved['savedTrackIds'])) {
       if (id is String) savedTrackIds.add(id);
@@ -224,10 +230,12 @@ class AppState extends ChangeNotifier {
         .toList();
 
     final restoredTracks = asList(saved['savedTracks']);
-    if (saved['profile'] is Map)
+    if (saved['profile'] is Map) {
       profile = Profile.fromJson(asMap(saved['profile']));
-    if (saved['settings'] is Map)
+    }
+    if (saved['settings'] is Map) {
       settings = AppSettings.fromJson(asMap(saved['settings']));
+    }
     if (saved['settings'] is Map) {
       final eq = asMap(asMap(saved['settings'])['eq']);
       if (eq['preset'] is String) settings.eq.preset = eq['preset'].toString();
@@ -331,6 +339,7 @@ class AppState extends ChangeNotifier {
     _notifyTimer?.cancel();
     _toastTimer?.cancel();
     _recsTimer?.cancel();
+    _dayRefreshTimer?.cancel();
     audio.positionNotifier.removeListener(_onPosition);
     audio.playingNotifier.removeListener(_onPlayingChanged);
     super.dispose();
@@ -439,6 +448,33 @@ class AppState extends ChangeNotifier {
 
   // ---------------------------------------------------------------- navigation
 
+  void _scheduleDailyRefresh() {
+    _dayRefreshTimer?.cancel();
+    final now = DateTime.now();
+    final nextDay = DateTime(now.year, now.month, now.day + 1);
+    _dayRefreshTimer = Timer(nextDay.difference(now), () {
+      final seed = daySeed();
+      if (seed != _dailySeed) {
+        _dailySeed = seed;
+        _refreshDailyMixLists();
+        notifyListeners();
+      }
+      _scheduleDailyRefresh();
+    });
+  }
+
+  void _refreshDailyMixLists() {
+    for (var i = 0; i < 5; i++) {
+      lists.remove('mix$i');
+      mixSeeds.remove('mix$i');
+    }
+    final mixes = dailyMixes();
+    for (var i = 0; i < mixes.length; i++) {
+      final key = reg('mix$i', mixes[i].tracks);
+      mixSeeds[key] = mixes[i].seed;
+    }
+  }
+
   void go(String name, {Object? arg, bool push = true}) {
     if (push) history.add(PageRef(pageName, pageArg));
     pageName = name;
@@ -516,10 +552,12 @@ class AppState extends ChangeNotifier {
         existing.cover = track.cover;
         existing.coverSource = track.coverSource;
       }
-      if (existing.src.isEmpty && track.src.isNotEmpty)
+      if (existing.src.isEmpty && track.src.isNotEmpty) {
         existing.src = track.src;
-      if (existing.duration == 0 && track.duration > 0)
+      }
+      if (existing.duration == 0 && track.duration > 0) {
         existing.duration = track.duration;
+      }
       if ((existing.album.isEmpty || existing.album == existing.title) &&
           track.album.isNotEmpty) {
         existing.album = track.album;
@@ -572,6 +610,35 @@ class AppState extends ChangeNotifier {
     qi = clampInt(index, 0, ids.length - 1);
     _shufflePlayed.clear();
     await start();
+  }
+
+  Future<void> playSharedTrack(Track shared) async {
+    final known = byId[shared.id];
+    var track = shared;
+    if (known != null &&
+        known.playable &&
+        compactKey(known.title) == compactKey(shared.title) &&
+        known.artists.any((artist) => sameArtist(artist, shared.primary))) {
+      track = known;
+    }
+    if (!track.playable) {
+      final results = await catalog.search(
+        '${shared.artists.isNotEmpty ? shared.artists.first : ''} ${shared.title}',
+      );
+      track = matchPlayableTrack(
+            results,
+            title: shared.title,
+            artist: shared.primary,
+            album: shared.album,
+          ) ??
+          Track.empty();
+      if (!track.playable) {
+        showToast('Could not find playable audio for this shared track.');
+        return;
+      }
+    }
+    final registered = registerTrack(track);
+    await playIds([registered.id]);
   }
 
   Future<void> start() async {
@@ -905,7 +972,9 @@ class AppState extends ChangeNotifier {
               album: track.album,
             );
             if (cover.isEmpty) {
-              if (track.cover.isEmpty) noCover.add(track.id);
+              if (track.cover.isEmpty) {
+                changed = noCover.add(track.id) || changed;
+              }
             } else {
               track.cover = cover;
               track.coverSource = 'deezer';
@@ -920,6 +989,8 @@ class AppState extends ChangeNotifier {
                 _coverWaiting.add(track);
                 _pumpCovers();
               });
+            } else if (track.cover.isEmpty) {
+              changed = noCover.add(track.id) || changed;
             }
           }
         }));
@@ -1395,8 +1466,9 @@ class AppState extends ChangeNotifier {
       direct.cover = cover;
       direct.coverSource = '';
       if (album.isNotEmpty &&
-          (direct.album.isEmpty || direct.album == direct.title))
+          (direct.album.isEmpty || direct.album == direct.title)) {
         direct.album = album;
+      }
       final stored = registerTrack(direct);
       if (stored.coverSource != 'deezer') {
         ensureCovers([stored], priority: true);
@@ -1412,15 +1484,18 @@ class AppState extends ChangeNotifier {
     final match =
         matchPlayableTrack(results, title: title, artist: artist, album: album);
     if (match == null) {
-      if (!quiet)
+      if (!quiet) {
         showToast('No playable audio was found for this track in the catalog.');
+      }
       return null;
     }
     final track = match.copy();
     track.cover = cover;
     track.coverSource = '';
-    if (album.isNotEmpty && (track.album.isEmpty || track.album == track.title))
+    if (album.isNotEmpty &&
+        (track.album.isEmpty || track.album == track.title)) {
       track.album = album;
+    }
     final stored = registerTrack(track);
     if (stored.coverSource != 'deezer') {
       ensureCovers([stored], priority: true);
@@ -1462,14 +1537,46 @@ class AppState extends ChangeNotifier {
   }
 
   Future<Release> fillRelease(Release release) async {
-    if (release.tracks.isNotEmpty || release.deezerId.isEmpty) return release;
+    if (release.tracks.isNotEmpty || release.deezerId.isEmpty) {
+      return _applyReleaseCorrections(release);
+    }
     return _fillReleaseFutures.putIfAbsent(release.deezerId, () async {
       try {
-        return await meta.fillRelease(release);
+        final filled = await meta.fillRelease(release);
+        return _applyReleaseCorrections(filled);
       } catch (_) {
         return release;
       }
     });
+  }
+
+  Release _applyReleaseCorrections(Release release) {
+    final artist = release.artistName;
+    if (!sameArtist(artist, 'Kai Angel') ||
+        compactKey(release.name) != 'damage') {
+      return release;
+    }
+
+    final tracks = List<ReleaseSong>.from(release.tracks);
+    final amyIndex = tracks.indexWhere((song) =>
+        compactKey(song.title) == 'amy' &&
+        sameArtist(song.artist.isEmpty ? artist : song.artist, 'Kai Angel'));
+    final amy = amyIndex >= 0
+        ? tracks.removeAt(amyIndex)
+        : ReleaseSong(
+            title: 'amy',
+            artist: 'Kai Angel',
+            album: 'damage',
+            cover: release.cover,
+            number: 18,
+          );
+    if (tracks.length < 17) return release;
+    amy.number = 18;
+    tracks.insert(17, amy);
+    return release.copyWith(
+      tracks: tracks,
+      trackCount: math.max(release.trackCount, tracks.length),
+    );
   }
 
   Future<void> playRelease(Release release, String artist,
@@ -1503,13 +1610,16 @@ class AppState extends ChangeNotifier {
     await playIds([lead.id]);
     unawaited(() async {
       for (var i = at; i < release.tracks.length; i++) {
-        if (session != _relSession || queue.isEmpty || queue.first != lead.id)
+        if (session != _relSession || queue.isEmpty || queue.first != lead.id) {
           return;
+        }
         final track = await releaseTrack(release, artist, i, quiet: true);
         if (track == null ||
             session != _relSession ||
             queue.isEmpty ||
-            queue.first != lead.id) continue;
+            queue.first != lead.id) {
+          continue;
+        }
         if (!queue.contains(track.id)) {
           queue.add(track.id);
           if (queueOpen) notifyListeners();
@@ -1520,8 +1630,9 @@ class AppState extends ChangeNotifier {
 
   Future<Release?> releaseForTrack(Track track) {
     final key = '${norm(track.primary)}|${norm(track.title)}';
-    if (_releaseForTrack.containsKey(key))
+    if (_releaseForTrack.containsKey(key)) {
       return Future.value(_releaseForTrack[key]);
+    }
     return _releaseForTrackFutures.putIfAbsent(key, () async {
       Release? release;
       try {
@@ -1627,8 +1738,9 @@ class AppState extends ChangeNotifier {
         final artist = knownArtists[next++];
         try {
           final result = await catalog.artistTracks(artist.names);
-          if (!result.reliable || result.tracks.isNotEmpty)
+          if (!result.reliable || result.tracks.isNotEmpty) {
             out.add(looseKey(artist.name));
+          }
         } catch (_) {
           out.add(looseKey(artist.name));
         }
@@ -1737,8 +1849,9 @@ class AppState extends ChangeNotifier {
   Future<void> importEqPreset(String text) async {
     try {
       final decoded = jsonDecode(text);
-      if (decoded is! Map || decoded['lumino'] != 'eq-preset')
+      if (decoded is! Map || decoded['lumino'] != 'eq-preset') {
         throw const FormatException();
+      }
       final bands = asList(decoded['bands']);
       if (bands.length != 10) throw const FormatException();
       final values = bands

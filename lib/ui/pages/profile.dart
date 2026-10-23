@@ -8,16 +8,84 @@ import '../../core/models.dart';
 import '../../core/utils.dart';
 import '../design.dart';
 
-class PublicUserProfilePage extends StatelessWidget {
-  const PublicUserProfilePage({super.key, required this.user});
+class PublicUserProfilePage extends StatefulWidget {
+  const PublicUserProfilePage(
+      {super.key, required this.state, required this.user});
+
+  final AppState state;
   final Map<String, dynamic> user;
+
+  @override
+  State<PublicUserProfilePage> createState() => _PublicUserProfilePageState();
+}
+
+class _PublicUserProfilePageState extends State<PublicUserProfilePage> {
+  late Map<String, dynamic> _profile = widget.user;
+  List<Track> _likedTracks = [];
+  int? _avatarColor;
+  String? _error;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    final username = (widget.user['username'] ?? '').toString();
+    if (username.isEmpty) {
+      setState(() {
+        _loading = false;
+        _error = 'Профиль пользователя недоступен';
+      });
+      return;
+    }
+    try {
+      final profile = await widget.state.auth.publicUserProfile(username);
+      final tracks = asList(profile['liked_tracks'])
+          .map((raw) => Track.fromJson(asMap(raw)))
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _profile = {...widget.user, ...profile};
+        _likedTracks = tracks;
+        _loading = false;
+      });
+      widget.state.ensureCovers(tracks, priority: true);
+      final avatar = (profile['avatar'] ?? '').toString();
+      if (avatar.isNotEmpty) {
+        final color = await widget.state.colorFor(avatar);
+        if (mounted) setState(() => _avatarColor = color);
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = 'Не удалось загрузить профиль: $error';
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final display =
-        (user['display_name'] ?? user['username'] ?? 'User').toString();
-    final username = (user['username'] ?? '').toString();
-    final avatar = (user['avatar'] ?? '').toString();
+        (_profile['display_name'] ?? _profile['username'] ?? 'User').toString();
+    final username = (_profile['username'] ?? '').toString();
+    final avatar = (_profile['avatar'] ?? '').toString();
+    final hue =
+        (hashString(username.isEmpty ? 'user' : username) % 360).toDouble();
+    final accent = _avatarColor == null
+        ? HSLColor.fromAHSL(1, hue, 0.38, 0.34).toColor()
+        : Color(_avatarColor!);
+    final groups = <String, _LikedGroup>{};
+    for (final track in _likedTracks) {
+      final name =
+          track.album.trim().isEmpty ? track.title : track.album.trim();
+      final key = '${norm(name)}|${norm(track.primary)}';
+      final group = groups.putIfAbsent(key, () => _LikedGroup(name, track));
+      group.count++;
+    }
     final compact = MediaQuery.sizeOf(context).width < 600;
     final size = compact ? 100.0 : 150.0;
     return Padding(
@@ -32,26 +100,38 @@ class PublicUserProfilePage extends StatelessWidget {
               center: const Alignment(-0.55, -0.95),
               radius: 1.55,
               colors: [
-                const Color(0xFF3A4264).withValues(alpha: 0.50),
-                const Color(0xFF121214),
+                Color.lerp(
+                        accent,
+                        ThemeScope.of(context).light
+                            ? Colors.white
+                            : Colors.black,
+                        ThemeScope.of(context).light ? 0.72 : 0.18)!
+                    .withValues(alpha: 0.92),
+                ThemeScope.of(context).light
+                    ? const Color(0xFFF1F2F5)
+                    : const Color(0xFF121214),
+                ThemeScope.of(context).light
+                    ? const Color(0xFFE6E8ED)
+                    : const Color(0xFF08080A),
               ],
+              stops: const [0, 0.52, 1],
             ),
             borderRadius: BorderRadius.circular(18),
           ),
           child: Row(children: [
-            ClipOval(
-              child: SizedBox(
-                width: size,
-                height: size,
-                child: avatar.isNotEmpty
-                    ? imageWidget(avatar, fit: BoxFit.cover)
-                    : const ColoredBox(
-                        color: Color(0xFF32323A),
-                        child: Center(
-                            child:
-                                LIcon('user', size: 52, color: Colors.white)),
-                      ),
+            Container(
+              width: size,
+              height: size,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: accent,
               ),
+              clipBehavior: Clip.antiAlias,
+              child: avatar.isNotEmpty
+                  ? imageWidget(avatar, fit: BoxFit.cover)
+                  : const Center(
+                      child: LIcon('user', size: 52, color: Colors.white),
+                    ),
             ),
             const SizedBox(width: 22),
             Expanded(
@@ -81,6 +161,53 @@ class PublicUserProfilePage extends StatelessWidget {
             ),
           ]),
         ),
+        const SizedBox(height: 24),
+        const Text('Liked releases',
+            style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
+        const SizedBox(height: 14),
+        if (_loading)
+          const Center(
+              child: Padding(
+            padding: EdgeInsets.all(24),
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ))
+        else if (_error != null)
+          EmptyState(text: _error!, left: true)
+        else if (groups.isEmpty)
+          const EmptyState(
+              text: 'This user has not liked any releases yet.', left: true)
+        else
+          LayoutBuilder(builder: (context, constraints) {
+            const gap = 16.0;
+            final columns = ((constraints.maxWidth + gap) / (160 + gap))
+                .floor()
+                .clamp(2, 7)
+                .toInt();
+            final items = groups.values.toList();
+            final rows = <Widget>[];
+            for (var i = 0; i < items.length; i += columns) {
+              final slice =
+                  items.sublist(i, (i + columns).clamp(0, items.length));
+              rows.add(Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (var j = 0; j < columns; j++) ...[
+                    if (j > 0) const SizedBox(width: gap),
+                    Expanded(
+                      child: j < slice.length
+                          ? _LikedReleaseCard(
+                              state: widget.state, group: slice[j])
+                          : const SizedBox(),
+                    ),
+                  ],
+                ],
+              ));
+              if (i + columns < items.length) {
+                rows.add(const SizedBox(height: 18));
+              }
+            }
+            return Column(children: rows);
+          }),
       ]),
     );
   }
@@ -265,7 +392,7 @@ class _ProfilePageState extends State<ProfilePage> {
                             blurRadius: 34,
                             offset: Offset(0, 14))
                       ],
-                      color: HSLColor.fromAHSL(1, hue, 0.34, 0.30).toColor(),
+                      color: hero,
                     ),
                     clipBehavior: Clip.antiAlias,
                     child: Stack(fit: StackFit.expand, children: [
@@ -405,7 +532,9 @@ class _LikedReleaseCardState extends State<_LikedReleaseCard> {
     }
     if (!mounted) return;
     setState(() => _opening = false);
-    if (widget.state.pageName != 'profile') return;
+    if (!const {'profile', 'user-profile'}.contains(widget.state.pageName)) {
+      return;
+    }
     if (release != null) {
       widget.state.go('release',
           arg: ReleaseArg(

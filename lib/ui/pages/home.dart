@@ -32,6 +32,10 @@ class HomePage extends StatelessWidget {
     final likedTracks = pool.where((t) => state.liked.contains(t.key)).toList();
     state.reg('liked', likedTracks);
     final mixes = state.dailyMixes();
+    state.ensureCovers(
+      mixes.expand((mix) => mix.tracks),
+      priority: true,
+    );
     final taste = state.tasteArtists();
     final topKeys = taste.take(5).map((x) => x.key).toSet();
     final mineNames = taste.take(5).map((x) => x.name).toList();

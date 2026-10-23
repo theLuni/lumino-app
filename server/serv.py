@@ -32,6 +32,7 @@ Lumino — серверная часть: подгрузка треков + ав
   POST /api/auth/login          {username, password}
   POST /api/auth/logout
   GET  /api/auth/me
+  GET  /api/users/profile?username=            public profile and liked releases
   POST /api/auth/password       {old_password, new_password}
   POST /api/auth/forgot         {email}
   POST /api/auth/reset/check    {email, code}
@@ -348,6 +349,50 @@ def _chat_user(user_id: int) -> dict | None:
         result["avatar"] = str(profile.get("avatar") or "") if isinstance(profile, dict) else ""
     except (ValueError, TypeError):
         result["avatar"] = ""
+    return result
+
+
+def _public_user_profile(user) -> dict:
+    result = public_user(dict(user))
+    row = one("SELECT data FROM user_state WHERE user_id = ?", (user["id"],))
+    if not row:
+        result.update(avatar="", liked_tracks=[])
+        return result
+    try:
+        state = json.loads(row["data"])
+    except (ValueError, TypeError):
+        result.update(avatar="", liked_tracks=[])
+        return result
+
+    profile = state.get("profile", {}) if isinstance(state, dict) else {}
+    result["avatar"] = str(profile.get("avatar") or "") if isinstance(profile, dict) else ""
+    likes = {
+        re.sub(r"\s+", " ", str(value).lower()).strip()
+        for value in state.get("liked", [])
+    } if isinstance(state, dict) and isinstance(state.get("liked"), list) else set()
+    tracks = state.get("savedTracks", []) if isinstance(state, dict) else []
+    liked_tracks = []
+    for track in tracks if isinstance(tracks, list) else []:
+        if not isinstance(track, dict):
+            continue
+        artists = track.get("artists", [])
+        artist = str(track.get("primary") or (
+            artists[0] if isinstance(artists, list) and artists else ""))
+        title = str(track.get("title") or "")
+        key = re.sub(r"\s+", " ", f"{artist} - {title}".lower()).strip()
+        if not title or key not in likes:
+            continue
+        liked_tracks.append({
+            "id": str(track.get("id") or ""),
+            "title": title,
+            "artists": artists if isinstance(artists, list) else [artist],
+            "primary": artist,
+            "album": str(track.get("album") or ""),
+            "cover": str(track.get("cover") or ""),
+            "duration": track.get("duration") or 0,
+            "releaseType": str(track.get("releaseType") or ""),
+        })
+    result["liked_tracks"] = liked_tracks
     return result
 
 
@@ -783,6 +828,9 @@ def _apply_track_alias(track: dict) -> dict:
                 and norm(track.get("title")) in {norm(s) for s in sources}):
             track["title"] = title
             break
+    if (norm(artist) == norm("Kai Angel")
+            and norm(track.get("title")) == norm("amy")):
+        track["album"] = "damage"
     return track
 
 
@@ -1482,6 +1530,14 @@ class Handler(BaseHTTPRequestHandler):
     def api_get(self, path: str) -> None:
         if path.startswith("/api/chat/"):
             return self.chat_get(path)
+        if path == "/api/users/profile":
+            username = self._param("username").strip()
+            if not username:
+                return self._fail("нужен username", 400)
+            user = find_user(username)
+            if not user:
+                return self._fail("пользователь не найден", 404)
+            return self._json({"user": _public_user_profile(user)})
         if path == "/api/auth/me":
             user = self._user()
             return self._json({"user": public_user(user) if user else None, "version": APP_VERSION})

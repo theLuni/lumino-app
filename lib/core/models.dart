@@ -2,8 +2,9 @@ import 'utils.dart';
 
 Map<String, dynamic> asMap(Object? value) {
   if (value is Map<String, dynamic>) return value;
-  if (value is Map)
+  if (value is Map) {
     return value.map((key, val) => MapEntry(key.toString(), val));
+  }
   return <String, dynamic>{};
 }
 
@@ -176,11 +177,13 @@ class Track {
 
 String classifyRelease(String title, String album, [int count = 0]) {
   final text = '${title.toLowerCase()} ${album.toLowerCase()}';
-  if (cachedRe(r'\b(ep|мини[- ]?альбом|mini[- ]?album)\b').hasMatch(text))
+  if (cachedRe(r'\b(ep|мини[- ]?альбом|mini[- ]?album)\b').hasMatch(text)) {
     return 'ep';
+  }
   if (cachedRe(r'\b(single|сингл)\b').hasMatch(text)) return 'single';
-  if (cachedRe(r'\b(album|альбом|lp|long play)\b').hasMatch(text))
+  if (cachedRe(r'\b(album|альбом|lp|long play)\b').hasMatch(text)) {
     return 'album';
+  }
   if (count == 1) return 'single';
   if (count >= 4 && count <= 7) return 'ep';
   return '';
@@ -292,9 +295,10 @@ class Release {
 }
 
 class ReleaseArg {
-  const ReleaseArg(this.release, {this.artist = ''});
+  const ReleaseArg(this.release, {this.artist = '', this.highlightTrack = ''});
   final Release release;
   final String artist;
+  final String highlightTrack;
 }
 
 class ReleaseIndex {
@@ -491,10 +495,12 @@ class AppSettings {
 
   factory AppSettings.fromJson(Map raw) {
     final settings = AppSettings();
-    if (['dark', 'light', 'black'].contains(asString(raw['theme'])))
+    if (['dark', 'light', 'black'].contains(asString(raw['theme']))) {
       settings.theme = asString(raw['theme']);
-    if (['low', 'normal', 'high'].contains(asString(raw['quality'])))
+    }
+    if (['low', 'normal', 'high'].contains(asString(raw['quality']))) {
       settings.quality = asString(raw['quality']);
+    }
     settings.eq = EqSettings.fromJson(asMap(raw['eq']));
     return settings;
   }
