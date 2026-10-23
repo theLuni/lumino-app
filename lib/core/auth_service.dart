@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'models.dart';
 import 'server_status.dart';
 
 /// Client for the Lumino server (/api/auth/*, /api/state).
@@ -138,6 +139,63 @@ class AuthService {
   }
 
   Future<Map<String, dynamic>> chatChats() => _call('GET', '/api/chat/chats');
+
+  Future<String> createPrivatePlaylistShare(String playlistId) async {
+    final data = await _post('/api/share/private-playlist', {
+      'playlist_id': playlistId,
+    });
+    final token = (data['token'] ?? '').toString();
+    if (token.isEmpty) {
+      throw const FormatException('Private playlist share link is missing.');
+    }
+    return token;
+  }
+
+  Future<String> createTrackShare(Track track) async {
+    final data = await _post('/api/share/track', {
+      'id': track.id,
+      'title': track.title,
+      'artists': track.artists,
+      'album': track.album,
+      'cover': track.cover,
+      'duration': track.duration,
+      'releaseType': track.releaseType,
+    });
+    final code = (data['code'] ?? '').toString();
+    if (!RegExp(r'^[A-Za-z0-9_-]{10,16}$').hasMatch(code)) {
+      throw const FormatException('Short track link is missing or invalid.');
+    }
+    return code;
+  }
+
+  Future<Track> sharedTrack(String code) async {
+    if (!RegExp(r'^[A-Za-z0-9_-]{10,16}$').hasMatch(code)) {
+      throw const FormatException('Short track link is invalid.');
+    }
+    final data = await _call(
+      'GET',
+      '/api/share/track?code=${Uri.encodeQueryComponent(code)}',
+    );
+    final track = data['track'];
+    if (track is! Map) {
+      throw const FormatException('Shared track response is malformed.');
+    }
+    return Track.fromJson(
+      track.map((key, value) => MapEntry(key.toString(), value)),
+    );
+  }
+
+  Future<Map<String, dynamic>> privatePlaylistShare(String token) async {
+    final data = await _call(
+      'GET',
+      '/api/share/private-playlist?token=${Uri.encodeQueryComponent(token)}',
+    );
+    final playlist = data['playlist'];
+    if (playlist is! Map) {
+      throw const FormatException('Private playlist response is malformed.');
+    }
+    return playlist.map((key, value) => MapEntry(key.toString(), value));
+  }
 
   Future<Map<String, dynamic>> publicUserProfile(String username) async {
     final data = await _call(

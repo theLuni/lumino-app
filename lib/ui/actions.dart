@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../core/app_state.dart';
 import '../core/models.dart';
+import '../core/share_links.dart';
 import '../core/utils.dart';
 import 'design.dart';
 
@@ -10,11 +12,274 @@ import 'design.dart';
 Future<void> shareTrackInChat(
     BuildContext context, AppState state, Track track) async {
   if (!context.mounted) return;
-  if (state.fullScreen) state.closeFull();
-  state.go(
-    'chats',
-    arg: ChatShareArg(track, DateTime.now().microsecondsSinceEpoch),
+  await showShareDialog(
+    context,
+    state,
+    uri: trackShareUri(track),
+    title: 'Share track',
+    track: track,
   );
+}
+
+Future<void> shareProfile(
+  BuildContext context,
+  AppState state,
+  String username,
+) =>
+    showShareDialog(
+      context,
+      state,
+      uri: profileShareUri(username),
+      title: 'Share profile',
+    );
+
+Future<void> sharePublicPlaylist(
+  BuildContext context,
+  AppState state, {
+  required String username,
+  required String playlistId,
+}) =>
+    showShareDialog(
+      context,
+      state,
+      uri: publicPlaylistShareUri(username, playlistId),
+      title: 'Share playlist',
+    );
+
+Future<void> sharePlaylist(
+  BuildContext context,
+  AppState state,
+  Playlist playlist,
+) async {
+  final username = state.auth.username?.trim() ?? '';
+  if (username.isEmpty) {
+    state.showToast('Sign in to share this playlist.');
+    return;
+  }
+  try {
+    final uri = playlist.isPublic
+        ? publicPlaylistShareUri(username, playlist.id)
+        : privatePlaylistShareUri(
+            await state.auth.createPrivatePlaylistShare(playlist.id));
+    if (!context.mounted) return;
+    await showShareDialog(
+      context,
+      state,
+      uri: uri,
+      title: 'Share playlist',
+    );
+  } catch (error) {
+    state.showToast('Could not create playlist link: $error');
+  }
+}
+
+Future<void> showShareDialog(
+  BuildContext context,
+  AppState state, {
+  required Uri uri,
+  required String title,
+  Track? track,
+}) async {
+  if (!context.mounted) return;
+  var shareUri = uri;
+  if (track != null) {
+    try {
+      final code = await state.auth.createTrackShare(track);
+      shareUri = Uri(
+        scheme: 'https',
+        host: shareLinkHost,
+        path: '/s/$code',
+      );
+    } catch (error) {
+      state.showToast('Could not create short track link: $error');
+      return;
+    }
+    if (!context.mounted) return;
+  }
+  List<Map<String, dynamic>> chats;
+  try {
+    final response = await state.auth.chatChats();
+    chats = (response['chats'] as List? ?? const [])
+        .whereType<Map>()
+        .map(
+            (chat) => chat.map((key, value) => MapEntry(key.toString(), value)))
+        .toList();
+  } catch (error) {
+    state.showToast('Could not load chats: $error');
+    chats = [];
+  }
+  if (!context.mounted) return;
+
+  final chat = await showGlassDialog<Map<String, dynamic>>(
+    context,
+    width: 460,
+    builder: (dialogContext) {
+      var query = '';
+      return StatefulBuilder(
+        builder: (context, updateDialog) {
+          final needle = query.trim().toLowerCase();
+          final matches = chats.where((chat) {
+            final peer = chat['peer'];
+            final username =
+                peer is Map ? (peer['username'] ?? '').toString() : '';
+            final name = peer is Map
+                ? (peer['display_name'] ?? username).toString()
+                : (chat['name'] ?? 'Chat').toString();
+            return needle.isEmpty ||
+                name.toLowerCase().contains(needle) ||
+                username.toLowerCase().contains(needle);
+          }).toList();
+          final visible = needle.isEmpty ? matches.take(5).toList() : matches;
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title,
+                  style: const TextStyle(
+                      fontSize: 20, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 12),
+              TextField(
+                autofocus: false,
+                onChanged: (value) => updateDialog(() => query = value),
+                decoration: const InputDecoration(
+                  hintText: 'Search chats',
+                  prefixIcon: Padding(
+                    padding: EdgeInsets.all(12),
+                    child: LIcon('search', size: 18),
+                  ),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 270),
+                child: visible.isEmpty
+                    ? const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(18),
+                          child: Text('No chats found'),
+                        ),
+                      )
+                    : ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: visible.length,
+                        itemBuilder: (context, index) {
+                          final item = visible[index];
+                          final peer = item['peer'];
+                          final name = peer is Map
+                              ? (peer['display_name'] ??
+                                      peer['username'] ??
+                                      'Chat')
+                                  .toString()
+                              : (item['name'] ?? 'Chat').toString();
+                          final avatar = peer is Map
+                              ? (peer['avatar'] ?? '').toString()
+                              : '';
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Row(
+                              children: [
+                                CircleAvatar(
+                                  radius: 21,
+                                  backgroundColor: const Color(0xFF34343D),
+                                  child: ClipOval(
+                                    child: avatar.isEmpty
+                                        ? const LIcon('chats', size: 18)
+                                        : SizedBox.expand(
+                                            child: imageWidget(
+                                              avatar,
+                                              fit: BoxFit.cover,
+                                            ),
+                                          ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                SizedBox(
+                                  width: 94,
+                                  height: 38,
+                                  child: FilledButton(
+                                    onPressed: () =>
+                                        Navigator.of(dialogContext).pop(item),
+                                    style: FilledButton.styleFrom(
+                                      backgroundColor: Colors.white,
+                                      foregroundColor: const Color(0xFF17171B),
+                                      padding: EdgeInsets.zero,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(11),
+                                      ),
+                                    ),
+                                    child: const Text('Send'),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Share link',
+                      style: TextStyle(
+                        color: kMuted,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    icon: const LIcon('share', size: 17),
+                    label: const Text('Copy link'),
+                    onPressed: () =>
+                        Navigator.of(dialogContext).pop(<String, dynamic>{}),
+                  ),
+                ],
+              ),
+            ],
+          );
+        },
+      );
+    },
+  );
+  if (!context.mounted) return;
+  if (chat == null) return;
+  if (chat.isEmpty) {
+    await Clipboard.setData(ClipboardData(text: shareUri.toString()));
+    state.showToast('Link copied');
+    return;
+  }
+  try {
+    final chatId = (chat['id'] ?? '').toString();
+    if (chatId.isEmpty) throw StateError('Chat id is missing.');
+    await state.auth.sendChatMessage(
+      chatId,
+      text: shareUri.toString(),
+      track: track == null
+          ? null
+          : {
+              'id': track.id,
+              'title': track.title,
+              'artists': track.artists,
+              'album': track.album,
+              'cover': track.cover,
+              'duration': track.duration,
+              'releaseType': track.releaseType,
+            },
+    );
+    state.showToast('Shared in chat');
+  } catch (error) {
+    state.showToast('Could not share: $error');
+  }
 }
 
 Future<void> openTrackRelease(AppState state, Track track) async {

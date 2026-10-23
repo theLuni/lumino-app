@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/app_state.dart';
 import '../../core/models.dart';
+import '../../core/share_links.dart';
 import '../actions.dart';
 import '../design.dart';
 
@@ -494,8 +495,8 @@ class _ChatsPageState extends State<ChatsPage> with WidgetsBindingObserver {
         meId: _me?['username']?.toString() ?? '',
         onUserTap: () => _openUser(user),
         me: _me ?? const <String, dynamic>{},
-        onTrackTap: (track) => openTrackRelease(widget.state, track),
         onTrackPlay: widget.state.playSharedTrack,
+        onShareLink: _openShareLink,
         onContextMenu: (position) => _showMessageActions(message, position),
         timeLabel: rawDate == null ? '' : _formatMessageTime(rawDate),
         isRead: message['is_read'] == true,
@@ -1020,6 +1021,14 @@ class _ChatsPageState extends State<ChatsPage> with WidgetsBindingObserver {
       'user-profile',
       arg: user,
     );
+  }
+
+  Future<void> _openShareLink(ShareLinkTarget target) async {
+    try {
+      await openShareLinkTarget(widget.state, target);
+    } catch (error) {
+      widget.state.showToast('Could not open link: $error');
+    }
   }
 
   @override
@@ -1595,8 +1604,8 @@ class _MessageBubble extends StatelessWidget {
     required this.meId,
     required this.onUserTap,
     required this.me,
-    required this.onTrackTap,
     required this.onTrackPlay,
+    required this.onShareLink,
     required this.onContextMenu,
     required this.timeLabel,
     required this.isRead,
@@ -1606,8 +1615,8 @@ class _MessageBubble extends StatelessWidget {
   final String meId;
   final VoidCallback onUserTap;
   final Map<String, dynamic> me;
-  final void Function(Track track) onTrackTap;
   final Future<void> Function(Track track) onTrackPlay;
+  final Future<void> Function(ShareLinkTarget target) onShareLink;
   final ValueChanged<Offset> onContextMenu;
   final String timeLabel;
   final bool isRead;
@@ -1685,10 +1694,23 @@ class _MessageBubble extends StatelessWidget {
     final track = trackData == null ? null : Track.fromJson(trackData);
     final image = (message['image'] ?? '').toString();
     final text = (message['text'] ?? '').toString();
-    final trackOnly = track != null && text.isEmpty && image.isEmpty;
+    final linkUri = Uri.tryParse(text.trim());
+    final shareTarget = linkUri == null ? null : parseShareUri(linkUri);
+    final trackLink =
+        shareTarget?.kind == 'track' || shareTarget?.kind == 'short-track';
+    final messageText = track != null && trackLink ? '' : text;
+    final trackOnly = track != null && messageText.isEmpty && image.isEmpty;
     final bubble = GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: text.isEmpty ? null : () => _openTextMessage(context, label, text),
+      onTap: messageText.isEmpty || track != null
+          ? null
+          : () {
+              if (shareTarget != null) {
+                unawaited(onShareLink(shareTarget));
+              } else {
+                unawaited(_openTextMessage(context, label, text));
+              }
+            },
       onSecondaryTapDown:
           mine ? (details) => onContextMenu(details.globalPosition) : null,
       child: IntrinsicWidth(
@@ -1719,8 +1741,8 @@ class _MessageBubble extends StatelessWidget {
                             fontWeight: FontWeight.w600)),
                   ),
                 ),
-              if (text.isNotEmpty)
-                Text(text, style: const TextStyle(fontSize: 14)),
+              if (messageText.isNotEmpty)
+                Text(messageText, style: const TextStyle(fontSize: 14)),
               if (image.isNotEmpty) ...[
                 const SizedBox(height: 7),
                 GestureDetector(
@@ -1737,97 +1759,61 @@ class _MessageBubble extends StatelessWidget {
               ],
               if (track != null) ...[
                 if (!trackOnly) const SizedBox(height: 8),
-                Container(
-                  width: 310,
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF29292F),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: const Color(0x20FFFFFF)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(9),
-                          child: CoverArt(
-                              track: track,
-                              size: 50,
-                              radius: 8,
-                              openArtwork: false),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: () => onTrackTap(track),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(children: const [
-                                  LIcon('note',
-                                      size: 12, color: Color(0x99FFFFFF)),
-                                  SizedBox(width: 5),
-                                  Text('SHARED TRACK',
-                                      style: TextStyle(
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w700,
-                                          letterSpacing: 1,
-                                          color: Color(0x99FFFFFF))),
-                                ]),
-                                const SizedBox(height: 5),
-                                Text(track.title,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                        fontWeight: FontWeight.w700)),
-                                const SizedBox(height: 3),
-                                Text(track.artists.join(', '),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                        fontSize: 11.5,
-                                        color: Color(0x99FFFFFF))),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ]),
-                      const SizedBox(height: 8),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: Semantics(
-                          button: true,
-                          label: 'Play track',
-                          child: GestureDetector(
-                            onTap: () => onTrackPlay(track),
-                            child: Container(
-                              height: 32,
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 11),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(18),
-                              ),
-                              child: const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  LIcon('play',
-                                      size: 14, color: Color(0xFF151519)),
-                                  SizedBox(width: 5),
-                                  Text('Play',
-                                      style: TextStyle(
-                                          color: Color(0xFF151519),
-                                          fontSize: 11.5,
-                                          fontWeight: FontWeight.w700)),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => unawaited(onTrackPlay(track)),
+                  child: Container(
+                    width: 310,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF25272A),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(
+                        color: const Color(0xFF666A6D),
+                        width: 7,
                       ),
-                    ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(11),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          AspectRatio(
+                            aspectRatio: 1,
+                            child: CoverArt(
+                              track: track,
+                              size: 278,
+                              radius: 0,
+                              openArtwork: false,
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(2, 12, 2, 3),
+                            child: Text(
+                              track.title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
+                            child: Text(
+                              'Track · ${track.artists.join(', ')}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: Color(0xFFE1E1E1),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ],

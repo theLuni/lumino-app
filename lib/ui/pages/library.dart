@@ -686,6 +686,13 @@ class PlaylistPage extends StatelessWidget {
                         },
                       ),
                       const SizedBox(width: 8),
+                      ChipButton(
+                        label: 'Share',
+                        icon: 'share',
+                        ghost: true,
+                        onTap: () => sharePlaylist(context, state, playlist),
+                      ),
+                      const SizedBox(width: 8),
                       IconAction(
                         icon: 'close',
                         size: 36,

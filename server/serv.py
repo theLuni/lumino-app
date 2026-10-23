@@ -47,10 +47,13 @@ Lumino — серверная часть: подгрузка треков + ав
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
+import gzip
 import hashlib
-import hmac
 import html
+import hmac
+import io
 import ipaddress
 import json
 import os
@@ -60,6 +63,7 @@ import shutil
 import smtplib
 import sqlite3
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -77,6 +81,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("LUMINO_DATA") or os.path.join(HERE, "data")
 DB_PATH = os.path.join(DATA_DIR, "fascind.db")
+PRIMARY_URL = os.environ.get("LUMINO_PRIMARY_URL", "").strip().rstrip("/")
+MIRROR_URL = os.environ.get("LUMINO_MIRROR_URL", "").strip().rstrip("/")
+REPLICATION_TOKEN = os.environ.get("LUMINO_REPLICATION_TOKEN", "").strip()
+REPLICATION_MAX_COMPRESSED = 256 * 1024 * 1024
+REPLICATION_MAX_DATABASE = 512 * 1024 * 1024
+PROXY_BODY_MAX = 24 * 1024 * 1024
 
 APP_VERSION = "0.2.6"
 CHUNK = 64 * 1024
@@ -116,12 +126,21 @@ LRCLIB_UA = "Lumino/0.2 (local music player)"
 
 _lock = threading.RLock()        # кэши поиска, текстов и сходства
 _db_lock = threading.RLock()     # запись в SQLite
+_replication_lock = threading.Lock()
+_replication_timer = None
+_replication_running = False
+_replication_pending = False
 _search_cache: dict = {}
 _search_status = {"error": "", "at": 0.0}
 _lyrics_cache: dict = {}
 _similar_cache: dict = {}
 _musicbrainz_lock = threading.Lock()
 _musicbrainz_last_request = 0.0
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def log(msg: str) -> None:
@@ -167,6 +186,23 @@ CREATE TABLE IF NOT EXISTS user_state (
     user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     data       TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS private_playlist_shares (
+    token_hash  TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    playlist_id TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS track_shares (
+    code       TEXT PRIMARY KEY,
+    user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    track_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lyrics_cache (
+    cache_key  TEXT PRIMARY KEY,
+    result_json TEXT NOT NULL,
+    cached_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS email_codes (
     user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -227,7 +263,165 @@ def execute(sql: str, args=()):
     with _db_lock, closing(db()) as conn:
         cur = conn.execute(sql, args)
         conn.commit()
-        return cur.lastrowid
+        result = cur.lastrowid
+    _schedule_database_replication()
+    return result
+
+
+def _replication_configuration_error() -> str:
+    if PRIMARY_URL and MIRROR_URL:
+        return "укажите только LUMINO_PRIMARY_URL или LUMINO_MIRROR_URL"
+    if PRIMARY_URL or MIRROR_URL:
+        for name, value in (("LUMINO_PRIMARY_URL", PRIMARY_URL),
+                            ("LUMINO_MIRROR_URL", MIRROR_URL)):
+            if value:
+                parsed = urllib.parse.urlparse(value)
+                if (parsed.scheme != "https" or not parsed.hostname
+                        or parsed.username or parsed.password
+                        or parsed.path or parsed.query or parsed.fragment):
+                    return "%s должен быть корректным HTTPS URL" % name
+        if len(REPLICATION_TOKEN) < 32:
+            return "LUMINO_REPLICATION_TOKEN должен содержать минимум 32 символа"
+    return ""
+
+
+def _schedule_database_replication(delay: float = 0.5) -> None:
+    global _replication_timer, _replication_pending
+    if not MIRROR_URL or not REPLICATION_TOKEN:
+        return
+    with _replication_lock:
+        if _replication_running:
+            _replication_pending = True
+            return
+        if _replication_timer is not None:
+            _replication_timer.cancel()
+        _replication_timer = threading.Timer(delay, _replicate_database)
+        _replication_timer.daemon = True
+        _replication_timer.start()
+
+
+def _replicate_database() -> None:
+    global _replication_timer, _replication_running, _replication_pending
+    with _replication_lock:
+        _replication_timer = None
+        if _replication_running:
+            _replication_pending = True
+            return
+        _replication_running = True
+        _replication_pending = False
+
+    succeeded = False
+    snapshot_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+                prefix=".fascind-replica-", suffix=".db", dir=DATA_DIR,
+                delete=False) as snapshot:
+            snapshot_path = snapshot.name
+        with _db_lock, closing(sqlite3.connect(DB_PATH, timeout=15)) as source, \
+                closing(sqlite3.connect(snapshot_path, timeout=15)) as target:
+            source.backup(target)
+        compressed = io.BytesIO()
+        with open(snapshot_path, "rb") as snapshot_file, \
+                gzip.GzipFile(fileobj=compressed, mode="wb", compresslevel=1) as archive:
+            shutil.copyfileobj(snapshot_file, archive, CHUNK)
+        payload = compressed.getvalue()
+        if len(payload) > REPLICATION_MAX_COMPRESSED:
+            raise ValueError("сжатая база превышает лимит репликации")
+        request = urllib.request.Request(
+            MIRROR_URL + "/_internal/replica/db",
+            data=payload,
+            headers={
+                "Content-Type": "application/gzip",
+                "Content-Length": str(len(payload)),
+                "X-Lumino-Replication-Token": REPLICATION_TOKEN,
+            },
+            method="PUT",
+        )
+        with closing(urllib.request.urlopen(request, timeout=45)) as response:
+            if response.status != 200:
+                raise OSError("зеркало ответило HTTP %s" % response.status)
+        succeeded = True
+        log("база синхронизирована с зеркалом (%d байт)" % len(payload))
+    except Exception as error:
+        log("ошибка репликации базы: %s: %s" % (type(error).__name__, error))
+    finally:
+        if snapshot_path:
+            try:
+                os.unlink(snapshot_path)
+            except OSError:
+                pass
+        with _replication_lock:
+            _replication_running = False
+            pending = _replication_pending
+            _replication_pending = False
+        if pending or not succeeded:
+            _schedule_database_replication(0.5 if pending else 5.0)
+
+
+def _receive_database_replica(handler) -> None:
+    if not REPLICATION_TOKEN or not hmac.compare_digest(
+            handler.headers.get("X-Lumino-Replication-Token", ""),
+            REPLICATION_TOKEN):
+        handler.close_connection = True
+        return handler._fail("нет доступа", 403)
+    try:
+        length = int(handler.headers.get("Content-Length") or 0)
+    except ValueError:
+        length = 0
+    if length <= 0 or length > REPLICATION_MAX_COMPRESSED:
+        handler.close_connection = True
+        return handler._fail("некорректный размер снимка базы", 413)
+    compressed = handler.rfile.read(length)
+    if len(compressed) != length:
+        handler.close_connection = True
+        return handler._fail("снимок базы получен не полностью", 400)
+
+    snapshot_path = ""
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(compressed), mode="rb") as archive, \
+                tempfile.NamedTemporaryFile(
+                    prefix=".fascind-replica-", suffix=".db", dir=DATA_DIR,
+                    delete=False) as snapshot:
+            snapshot_path = snapshot.name
+            total = 0
+            while True:
+                chunk = archive.read(CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > REPLICATION_MAX_DATABASE:
+                    raise ValueError("база превышает лимит репликации")
+                snapshot.write(chunk)
+        with closing(sqlite3.connect(snapshot_path, timeout=15)) as check:
+            result = check.execute("PRAGMA integrity_check").fetchone()
+            if not result or result[0] != "ok":
+                raise ValueError("проверка целостности базы не пройдена")
+            tables = {
+                row[0] for row in check.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if not {"users", "user_state", "sessions"}.issubset(tables):
+                raise ValueError("в снимке отсутствуют основные таблицы Lumino")
+        with _db_lock:
+            for suffix in ("-wal", "-shm", "-journal"):
+                try:
+                    os.unlink(DB_PATH + suffix)
+                except FileNotFoundError:
+                    pass
+            os.replace(snapshot_path, DB_PATH)
+            snapshot_path = ""
+        log("получена актуальная копия базы (%d байт)" % total)
+        return handler._send(200, b"ok", "text/plain; charset=utf-8")
+    except (OSError, sqlite3.Error, ValueError, EOFError) as error:
+        log("не удалось применить копию базы: %s: %s" % (type(error).__name__, error))
+        return handler._fail("не удалось применить копию базы", 400)
+    finally:
+        if snapshot_path:
+            try:
+                os.unlink(snapshot_path)
+            except OSError:
+                pass
 
 
 def _load_code_secret() -> None:
@@ -270,6 +464,13 @@ def init_db() -> None:
         if "typing_at" not in member_columns:
             conn.execute(
                 "ALTER TABLE chat_members ADD COLUMN typing_at TEXT NOT NULL DEFAULT ''"
+            )
+        track_share_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(track_shares)")
+        }
+        if "user_id" not in track_share_columns:
+            conn.execute(
+                "ALTER TABLE track_shares ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL"
             )
         conn.execute("DELETE FROM chats WHERE type != 'direct'")
         conn.execute("DELETE FROM sessions WHERE expires_at < ?", (iso(),))
@@ -459,6 +660,48 @@ def _public_user_profile(user) -> dict:
         })
     result["public_playlists"] = public_playlists
     return result
+
+
+def _playlist_share_data(state: dict, playlist_id: str) -> dict | None:
+    playlists = state.get("playlists", [])
+    playlist = next(
+        (item for item in playlists if isinstance(item, dict)
+         and str(item.get("id") or "") == playlist_id),
+        None,
+    ) if isinstance(playlists, list) else None
+    if not playlist:
+        return None
+    saved_tracks = {
+        str(track.get("id") or ""): track
+        for track in state.get("savedTracks", [])
+        if isinstance(track, dict)
+    } if isinstance(state.get("savedTracks"), list) else {}
+    ids = playlist.get("ids", [])
+    ids = ids if isinstance(ids, list) else []
+    tracks = []
+    cover = str(playlist.get("cover") or "")
+    for track_id in ids:
+        track = saved_tracks.get(str(track_id))
+        if not isinstance(track, dict) or not track.get("title"):
+            continue
+        if not cover and track.get("cover"):
+            cover = str(track["cover"])
+        artists = track.get("artists", [])
+        tracks.append({
+            "id": str(track.get("id") or track_id),
+            "title": str(track.get("title") or ""),
+            "artists": artists if isinstance(artists, list) else [],
+            "album": str(track.get("album") or ""),
+            "cover": str(track.get("cover") or ""),
+            "duration": track.get("duration") or 0,
+            "releaseType": str(track.get("releaseType") or ""),
+        })
+    return {
+        "id": playlist_id,
+        "name": str(playlist.get("name") or "Playlist"),
+        "cover": cover,
+        "tracks": tracks,
+    }
 
 
 # ------------------------------------------------------------------ почта и коды
@@ -975,6 +1218,20 @@ def _lyrics_for(title, artist, artists, album, duration) -> dict:
         hit = _lyrics_cache.get(key)
     if hit:
         return hit
+    cached = one("SELECT result_json FROM lyrics_cache WHERE cache_key = ?", (key,))
+    if cached:
+        try:
+            hit = json.loads(cached["result_json"])
+        except (TypeError, ValueError):
+            log("повреждён кэш текста песни для ключа %s" % key)
+            execute("DELETE FROM lyrics_cache WHERE cache_key = ?", (key,))
+        else:
+            if isinstance(hit, dict) and isinstance(hit.get("variants"), list) and hit["variants"]:
+                with _lock:
+                    _lyrics_cache[key] = hit
+                return hit
+            log("некорректная запись кэша текста песни для ключа %s" % key)
+            execute("DELETE FROM lyrics_cache WHERE cache_key = ?", (key,))
 
     want = norm(cleaned)
     found: dict = {}
@@ -1044,9 +1301,20 @@ def _lyrics_for(title, artist, artists, album, duration) -> dict:
             variants.append({"label": plain.get("albumName") or plain.get("trackName") or "LRCLIB",
                              "synced": False, "lines": lines})
     result = {"variants": variants, "failed": (not state["ok"] and state["failed"])}
-    if any(v["synced"] for v in variants):
+    if variants:
         with _lock:
             _lyrics_cache[key] = result
+        try:
+            execute(
+                """INSERT INTO lyrics_cache (cache_key, result_json, cached_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(cache_key) DO UPDATE SET
+                       result_json = excluded.result_json,
+                       cached_at = excluded.cached_at""",
+                (key, json.dumps(result, ensure_ascii=False), iso()),
+            )
+        except sqlite3.Error as error:
+            log("не удалось сохранить текст песни в кэш для ключа %s: %s" % (key, error))
     return result
 
 
@@ -1265,6 +1533,36 @@ def _cover_host_ok(url: str) -> bool:
 def _image_host_ok(url: str) -> bool:
     return _cdn_ok(url) and _host_in(url, IMAGE_HOSTS)
 
+def _share_image_url(value) -> str:
+    url = str(value or "").strip()
+    if url.startswith("data:"):
+        match = re.fullmatch(
+            r"data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/]*={0,2})",
+            url,
+            flags=re.IGNORECASE,
+        )
+        if not match or not match.group(2) or len(match.group(2)) > 700_000:
+            return ""
+        try:
+            base64.b64decode(match.group(2), validate=True)
+        except ValueError:
+            return ""
+        return url
+    if url.startswith("/api/image?"):
+        query = urllib.parse.parse_qs(
+            urllib.parse.urlparse(url).query, max_num_fields=2
+        )
+        source = (query.get("url") or [""])[0]
+        if not _image_host_ok(source):
+            return ""
+        return "https://fascind.theluni.ru/api/image?url=" + urllib.parse.quote(
+            source, safe=""
+        )
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        return ""
+    return url[:2048]
+
 
 def cover_for(artist: str, title: str, album: str) -> str:
     """Ссылка на обложку (внешний CDN). Кэшируем и пустые ответы, чтобы не долбить источники."""
@@ -1360,6 +1658,88 @@ class Handler(BaseHTTPRequestHandler):
     def _user(self):
         return user_by_token(self._token())
 
+    def _forwards_to_primary(self, path: str) -> bool:
+        return bool(PRIMARY_URL) and (
+            path in ("/share", "/api/state", "/api/users/profile")
+            or path.startswith("/s/")
+            or path.startswith("/api/auth/")
+            or path.startswith("/api/chat/")
+            or path.startswith("/api/share/")
+        )
+
+    def _forward_to_primary(self) -> None:
+        if self.headers.get("X-Lumino-Primary-Proxy") == "1":
+            return self._fail("обнаружен цикл проксирования", 508)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self._fail("некорректный размер запроса", 400)
+        if length < 0 or length > PROXY_BODY_MAX:
+            self.close_connection = True
+            return self._fail("запрос слишком большой", 413)
+        body = self.rfile.read(length) if length else None
+        headers = {}
+        for name in ("Accept", "Authorization", "Content-Type", "Cookie",
+                     "Range", "X-Forwarded-For", "X-Forwarded-Proto"):
+            value = self.headers.get(name)
+            if value:
+                headers[name] = value
+        headers["Accept-Encoding"] = "identity"
+        headers["X-Lumino-Primary-Proxy"] = "1"
+        request = urllib.request.Request(
+            PRIMARY_URL + self.path,
+            data=body,
+            headers=headers,
+            method=self.command,
+        )
+        response = None
+        response_started = False
+        try:
+            try:
+                response = urllib.request.build_opener(_NoRedirect()).open(
+                    request, timeout=60)
+            except urllib.error.HTTPError as error:
+                response = error
+            self.send_response(response.status)
+            response_started = True
+            for name in (
+                "Content-Type",
+                "Content-Length",
+                "Cache-Control",
+                "Content-Disposition",
+                "Content-Range",
+                "Accept-Ranges",
+                "Location",
+                "Retry-After",
+                "Content-Security-Policy",
+                "X-Content-Type-Options",
+                "Referrer-Policy",
+            ):
+                value = response.headers.get(name)
+                if value:
+                    self.send_header(name, value)
+            for cookie in response.headers.get_all("Set-Cookie", []):
+                self.send_header("Set-Cookie", cookie)
+            if not response.headers.get("Content-Length"):
+                self.send_header("Connection", "close")
+                self.close_connection = True
+            self.end_headers()
+            if self.command != "HEAD":
+                shutil.copyfileobj(response, self.wfile, CHUNK)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        except Exception as error:
+            log("ошибка прокси к главному серверу %s: %s" % (
+                self.path.split("?", 1)[0], error))
+            if not response_started and not self.wfile.closed:
+                try:
+                    self._fail("главный сервер временно недоступен", 503)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+        finally:
+            if response is not None:
+                response.close()
+
     def _body(self, limit: int = 64 * 1024):
         """JSON-тело. None — тело больше лимита (не читаем)."""
         try:
@@ -1383,8 +1763,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self._route()
         try:
+            if self._forwards_to_primary(path):
+                return self._forward_to_primary()
             if path == "/health":
                 return self._send(200, b"ok", "text/plain; charset=utf-8")
+            if path == "/share/lumino.png":
+                return self.lumino_share_icon()
+            if path == "/share" or path.startswith("/s/"):
+                return self.share_page()
             if path.startswith("/api/"):
                 return self.api_get(path)
             return self._fail("не найдено", 404)
@@ -1397,10 +1783,300 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def lumino_share_icon(self) -> None:
+        icon_paths = (
+            os.path.join(HERE, "assets", "icon.png"),
+            os.path.join(HERE, os.pardir, "assets", "icon.png"),
+        )
+        icon = None
+        for icon_path in icon_paths:
+            try:
+                with open(icon_path, "rb") as icon_file:
+                    icon = icon_file.read(256 * 1024 + 1)
+                break
+            except OSError:
+                continue
+        if icon is None:
+            log(
+                "не удалось найти иконку Lumino для share-страницы: %s"
+                % ", ".join(icon_paths)
+            )
+            return self._fail("иконка Lumino недоступна", 404)
+        if len(icon) > 256 * 1024:
+            log("иконка Lumino для share-страницы превышает допустимый размер")
+            return self._fail("иконка Lumino недоступна", 404)
+        return self._send(200, icon, "image/png")
+
+    def share_page(self) -> None:
+        parsed_path = urllib.parse.urlparse(self.path)
+        if parsed_path.path.startswith("/s/"):
+            code = parsed_path.path.removeprefix("/s/")
+            if not re.fullmatch(r"[A-Za-z0-9_-]{10,16}", code):
+                return self._fail("ссылка недействительна", 404)
+            row = one(
+                "SELECT track_json, user_id FROM track_shares WHERE code = ?",
+                (code,),
+            )
+            if not row:
+                return self._fail("ссылка недействительна или удалена", 404)
+            try:
+                track = json.loads(row["track_json"])
+            except (ValueError, TypeError):
+                return self._fail("трек недоступен", 404)
+            if not isinstance(track, dict):
+                return self._fail("трек недоступен", 404)
+            encoded = base64.urlsafe_b64encode(
+                json.dumps(track, ensure_ascii=False).encode("utf-8")
+            ).decode("ascii").rstrip("=")
+            kind = "track"
+            params = {"data": encoded}
+            if row["user_id"] is not None:
+                owner_profile = _chat_user(int(row["user_id"]))
+                if owner_profile:
+                    params["_owner_avatar"] = _share_image_url(
+                        owner_profile.get("avatar")
+                    )
+            app_link = "lumino://share/%s" % urllib.parse.quote(code, safe="")
+        else:
+            query = urllib.parse.parse_qs(parsed_path.query, max_num_fields=8)
+            kind = (query.get("type") or [""])[0]
+            params = {}
+        allowed = {
+            "track": {"data"},
+            "profile": {"username"},
+            "playlist": {"username", "id", "token"},
+        }
+        fields = allowed.get(kind)
+        if fields is None:
+            return self._fail("ссылка недействительна", 404)
+        if parsed_path.path == "/share":
+            params = {
+                key: (query.get(key) or [""])[0] for key in fields if key in query
+            }
+        if kind == "track":
+            valid = bool(re.fullmatch(r"[A-Za-z0-9_-]{1,12000}", params.get("data", "")))
+            app_kind = "track"
+        elif kind == "profile":
+            username = params.get("username", "").strip()
+            valid = bool(re.fullmatch(r"[\w.@+\- ]{3,32}", username))
+            params["username"] = username
+            app_kind = "profile"
+        else:
+            token = params.get("token", "").strip()
+            if token:
+                valid = bool(re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token))
+                params = {"token": token}
+            else:
+                username = params.get("username", "").strip()
+                playlist_id = params.get("id", "").strip()
+                valid = (
+                    bool(re.fullmatch(r"[\w.@+\- ]{3,32}", username))
+                    and bool(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", playlist_id))
+                )
+                params = {"username": username, "id": playlist_id}
+            app_kind = "playlist"
+        if not valid:
+            return self._fail("ссылка недействительна", 404)
+
+        title, author, cover, author_avatar = self._share_page_metadata(
+            kind, params
+        )
+        if parsed_path.path == "/share":
+            app_link = "lumino://%s?%s" % (
+                app_kind,
+                urllib.parse.urlencode(params),
+            )
+        safe_link = html.escape(app_link, quote=True)
+        safe_title = html.escape(title)
+        safe_author = html.escape(author)
+        safe_cover = html.escape(cover, quote=True)
+        safe_author_avatar = html.escape(author_avatar, quote=True)
+        nonce = secrets.token_urlsafe(18)
+        cover_html = (
+            '<img class="cover" src="%s" alt="" referrerpolicy="no-referrer">'
+            % safe_cover
+            if cover
+            else '<div class="cover placeholder">L</div>'
+        )
+        author_avatar_html = (
+            '<img class="author-avatar" src="%s" alt="" referrerpolicy="no-referrer">'
+            % safe_author_avatar
+            if author_avatar
+            else '<span class="author-avatar placeholder-avatar">L</span>'
+        )
+        body = (
+            "<!doctype html><html lang=\"ru\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<meta name=\"theme-color\" content=\"#111111\">"
+            "<meta property=\"og:type\" content=\"music.song\">"
+            "<meta property=\"og:title\" content=\"%s\">"
+            "<meta property=\"og:description\" content=\"%s · Lumino\">"
+            "<meta name=\"twitter:card\" content=\"summary_large_image\">"
+            "<meta name=\"twitter:title\" content=\"%s\">"
+            "<meta name=\"twitter:description\" content=\"%s · Lumino\">"
+            "%s<title>%s · Lumino</title><style>"
+            "*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;"
+            "place-items:center;padding:24px;background:#0b0b0b;color:#f7f7f7;"
+            "font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}"
+            ".card{width:min(100%%,420px);padding:24px;border:1px solid #303030;"
+            "border-radius:24px;background:#171717;box-shadow:0 24px 80px #000a}"
+            ".brand{display:flex;align-items:center;gap:9px;margin-bottom:22px;"
+            "font-size:14px;font-weight:700;letter-spacing:.08em;color:#f2f2f2}"
+            ".logo-avatar{display:block;width:30px;height:30px;border-radius:9px;"
+            "object-fit:cover;background:#000}"
+            ".cover{display:block;width:min(100%%,300px);aspect-ratio:1;"
+            "margin:0 auto 22px;border-radius:18px;object-fit:cover;"
+            "background:#252525}"
+            ".placeholder{display:grid;place-items:center;font-size:64px;font-weight:800;"
+            "color:#f2f2f2}.title{margin:0;text-align:center;font-size:25px;"
+            "line-height:1.2;letter-spacing:-.03em}.author{display:flex;align-items:center;"
+            "justify-content:center;gap:9px;margin:12px 0 24px;color:#c9c9c9}"
+            ".author-avatar{width:30px;height:30px;border-radius:50%%;object-fit:cover;"
+            "background:#353535}.placeholder-avatar{display:grid;place-items:center;"
+            "font-weight:700;color:#f2f2f2}.open{display:block;width:100%%;padding:14px;"
+            "border:1px solid #f2f2f2;border-radius:14px;background:#f2f2f2;color:#111;"
+            "text-align:center;"
+            "font:inherit;font-weight:700;text-decoration:none;cursor:pointer}"
+            ".open:hover{background:#d8d8d8}.hint{margin:15px 0 0;text-align:center;"
+            "font-size:13px;color:#a5a5a5}.hint a{color:#f2f2f2}"
+            ".fallback{margin-top:14px;padding:12px;border:1px solid #343434;"
+            "border-radius:12px;background:#202020;color:#c2c2c2;font-size:13px}"
+            ".fallback[hidden]{display:none}"
+            "</style></head><body><main class=\"card\"><div class=\"brand\">"
+            "<img class=\"logo-avatar\" src=\"/share/lumino.png\" alt=\"Lumino\">"
+            "<span>LUMINO</span></div>%s"
+            "<h1 class=\"title\">%s</h1><p class=\"author\">%s%s</p>"
+            "<a id=\"open-app\" class=\"open\" href=\"%s\">Открыть в Lumino</a>"
+            "<p class=\"hint\">Если приложение не открылось, установите Lumino "
+            "и нажмите кнопку ещё раз.</p><div id=\"open-help\" class=\"fallback\" hidden>"
+            "Lumino не открылся? На Windows установите приложение через Lumino "
+            "Installer, чтобы зарегистрировать ссылку. Затем вернитесь сюда и "
+            "нажмите «Открыть в Lumino» ещё раз.</div></main>"
+            "<script nonce=\"%s\">document.getElementById('open-app').addEventListener("
+            "'click',function(){setTimeout(function(){if(document.visibilityState"
+            "==='visible'){document.getElementById('open-help').hidden=false;}},"
+            "1400);});</script></body></html>"
+            % (
+                safe_title,
+                safe_author,
+                safe_title,
+                safe_author,
+                '<meta property="og:image" content="%s">' % safe_cover
+                if cover
+                else "",
+                safe_title,
+                cover_html,
+                safe_title,
+                author_avatar_html,
+                safe_author,
+                safe_link,
+                nonce,
+            )
+        )
+        return self._send(
+            200,
+            body.encode("utf-8"),
+            "text/html; charset=utf-8",
+            extra=(
+                (
+                    "Content-Security-Policy",
+                    "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; "
+                    "script-src 'nonce-%s'" % nonce,
+                ),
+            ),
+        )
+
+    def _share_page_metadata(
+        self, kind: str, params: dict
+    ) -> tuple[str, str, str, str]:
+        if kind == "track":
+            try:
+                raw = params["data"]
+                decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
+                track = json.loads(decoded.decode("utf-8"))
+            except (KeyError, ValueError, UnicodeDecodeError):
+                return "Трек", "Lumino", "", ""
+            if not isinstance(track, dict):
+                return "Трек", "Lumino", "", ""
+            title = str(track.get("title") or "Трек")[:200]
+            artists = track.get("artists")
+            author = ", ".join(str(value) for value in artists[:5]) if isinstance(artists, list) else ""
+            return (
+                title,
+                author or "Lumino",
+                _share_image_url(track.get("cover")),
+                _share_image_url(params.get("_owner_avatar")),
+            )
+
+        if kind == "profile":
+            user = find_user(params["username"])
+            if not user:
+                return "Профиль не найден", "Lumino", "", ""
+            profile = _public_user_profile(user)
+            avatar = _share_image_url(profile.get("avatar"))
+            return (
+                str(profile.get("display_name") or profile.get("username") or "Профиль")[:200],
+                "Профиль Lumino",
+                avatar,
+                avatar,
+            )
+
+        if "token" in params:
+            token_hash = hashlib.sha256(params["token"].encode("ascii")).hexdigest()
+            share = one(
+                "SELECT user_id, playlist_id FROM private_playlist_shares WHERE token_hash = ?",
+                (token_hash,),
+            )
+            if not share:
+                return "Плейлист недоступен", "Lumino", "", ""
+            row = one("SELECT data FROM user_state WHERE user_id = ?", (share["user_id"],))
+            try:
+                state = json.loads(row["data"]) if row else {}
+            except (ValueError, TypeError):
+                state = {}
+            playlist = _playlist_share_data(state, str(share["playlist_id"]))
+            owner = one(
+                "SELECT username, display_name FROM users WHERE id = ?",
+                (share["user_id"],),
+            )
+            owner_profile = _public_user_profile(owner) if owner else {}
+        else:
+            owner = find_user(params["username"])
+            playlist = None
+            owner_profile = {}
+            if owner:
+                profile = _public_user_profile(owner)
+                owner_profile = profile
+                playlists = profile.get("public_playlists", [])
+                playlist = next(
+                    (
+                        item
+                        for item in playlists
+                        if str(item.get("id") or "") == params["id"]
+                    ),
+                    None,
+                )
+        if not playlist:
+            return "Плейлист не найден", "Lumino", "", ""
+        author = (
+            str(owner.get("display_name") or owner.get("username") or "Lumino")
+            if owner
+            else "Lumino"
+        )
+        return (
+            str(playlist.get("name") or "Плейлист")[:200],
+            author,
+            _share_image_url(playlist.get("cover")),
+            _share_image_url(owner_profile.get("avatar")),
+        )
+
     def do_POST(self):
         path = self._route()
         try:
-            if path.startswith("/api/auth/") or path.startswith("/api/chat/"):
+            if self._forwards_to_primary(path):
+                return self._forward_to_primary()
+            if (path.startswith("/api/auth/") or path.startswith("/api/chat/")
+                    or path.startswith("/api/share/")):
                 return self.api_post(path)
             return self._fail("не найдено", 404)
         except (BrokenPipeError, ConnectionResetError):
@@ -1415,6 +2091,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):
         path = self._route()
         try:
+            if path == "/_internal/replica/db" and PRIMARY_URL:
+                return _receive_database_replica(self)
+            if self._forwards_to_primary(path):
+                return self._forward_to_primary()
             if path == "/api/state":
                 return self.api_put_state()
             return self._fail("не найдено", 404)
@@ -1773,6 +2453,50 @@ class Handler(BaseHTTPRequestHandler):
     def api_get(self, path: str) -> None:
         if path.startswith("/api/chat/"):
             return self.chat_get(path)
+        if path == "/api/share/track":
+            code = self._param("code").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]{10,16}", code):
+                return self._fail("ссылка недействительна", 404)
+            row = one(
+                "SELECT track_json FROM track_shares WHERE code = ?", (code,)
+            )
+            if not row:
+                return self._fail("ссылка недействительна или удалена", 404)
+            try:
+                track = json.loads(row["track_json"])
+            except (ValueError, TypeError):
+                return self._fail("трек недоступен", 404)
+            if not isinstance(track, dict):
+                return self._fail("трек недоступен", 404)
+            return self._json({"track": track})
+        if path == "/api/share/private-playlist":
+            token = self._param("token").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token):
+                return self._fail("ссылка недействительна", 404)
+            token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
+            share = one(
+                "SELECT user_id, playlist_id FROM private_playlist_shares WHERE token_hash = ?",
+                (token_hash,),
+            )
+            if not share:
+                return self._fail("ссылка недействительна или отозвана", 404)
+            row = one("SELECT data FROM user_state WHERE user_id = ?", (share["user_id"],))
+            try:
+                state = json.loads(row["data"]) if row else {}
+            except (ValueError, TypeError):
+                return self._fail("плейлист недоступен", 404)
+            playlist = _playlist_share_data(state, str(share["playlist_id"]))
+            if playlist is None:
+                return self._fail("плейлист больше не существует", 404)
+            owner = one(
+                "SELECT username, display_name FROM users WHERE id = ?",
+                (share["user_id"],),
+            )
+            if not owner:
+                return self._fail("плейлист недоступен", 404)
+            playlist["username"] = owner["username"]
+            playlist["owner"] = owner["display_name"] or owner["username"]
+            return self._json({"playlist": playlist})
         if path == "/api/users/profile":
             username = self._param("username").strip()
             if not username:
@@ -1943,6 +2667,71 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/api/chat/"):
             return self.chat_post(path, body)
+        if path == "/api/share/private-playlist":
+            user = self._user()
+            if not user:
+                return self._fail("нужно войти", 401)
+            playlist_id = str(body.get("playlist_id") or "").strip()
+            if not playlist_id or len(playlist_id) > 128:
+                return self._fail("нужен корректный playlist_id", 400)
+            row = one("SELECT data FROM user_state WHERE user_id = ?", (user["id"],))
+            try:
+                state = json.loads(row["data"]) if row else {}
+            except (ValueError, TypeError):
+                return self._fail("состояние плейлиста повреждено", 500)
+            playlist = next(
+                (item for item in state.get("playlists", [])
+                 if isinstance(item, dict)
+                 and str(item.get("id") or "") == playlist_id),
+                None,
+            ) if isinstance(state, dict) and isinstance(state.get("playlists"), list) else None
+            if not playlist:
+                return self._fail("плейлист не найден", 404)
+            if playlist.get("public") is True:
+                return self._fail("для публичного плейлиста используйте публичную ссылку", 400)
+            token = secrets.token_urlsafe(32)
+            token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
+            execute(
+                "INSERT INTO private_playlist_shares (token_hash, user_id, playlist_id, created_at) "
+                "VALUES (?,?,?,?)",
+                (token_hash, user["id"], playlist_id, iso()),
+            )
+            return self._json({"token": token})
+
+        if path == "/api/share/track":
+            user = self._user()
+            if not user:
+                return self._fail("нужно войти", 401)
+            title = str(body.get("title") or "").strip()[:200]
+            raw_artists = body.get("artists")
+            artists = (
+                [str(artist).strip()[:120] for artist in raw_artists[:10] if str(artist).strip()]
+                if isinstance(raw_artists, list)
+                else []
+            )
+            if not title or not artists:
+                return self._fail("нужны название и исполнитель трека", 400)
+            try:
+                duration = max(0, min(86400, int(body.get("duration") or 0)))
+            except (ValueError, TypeError, OverflowError):
+                duration = 0
+            track = {
+                "id": str(body.get("id") or "")[:128],
+                "title": title,
+                "artists": artists,
+                "album": str(body.get("album") or "")[:200],
+                "cover": _share_image_url(body.get("cover")),
+                "duration": duration,
+                "releaseType": str(body.get("releaseType") or "")[:40],
+            }
+            track_json = json.dumps(track, ensure_ascii=False, separators=(",", ":"))
+            code = secrets.token_urlsafe(8)
+            execute(
+                "INSERT INTO track_shares (code, user_id, track_json, created_at) "
+                "VALUES (?,?,?,?)",
+                (code, user["id"], track_json, iso()),
+            )
+            return self._json({"code": code})
 
         if path == "/api/auth/register":
             username = str(body.get("username") or "").strip()
@@ -2108,12 +2897,17 @@ def main() -> None:
     args = parser.parse_args()
 
     port = int(args.port or args.port_pos or os.environ.get("PORT") or 8000)
+    replication_error = _replication_configuration_error()
+    if replication_error:
+        raise SystemExit(replication_error)
     init_db()
     if not SMTP_HOST or not SMTP_USER:
         log("внимание: почта не настроена — регистрация и сброс пароля будут недоступны")
 
     srv = ThreadingHTTPServer((args.host, port), Handler)
     srv.daemon_threads = True
+    if MIRROR_URL:
+        _schedule_database_replication(0.1)
     label = "127.0.0.1" if args.host in ("0.0.0.0", "") else args.host
     print("")
     print("  Lumino %s — сервер готов на http://%s:%d/" % (APP_VERSION, label, port))

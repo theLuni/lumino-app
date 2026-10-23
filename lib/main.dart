@@ -7,6 +7,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:app_links/app_links.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:tray_manager/tray_manager.dart';
@@ -14,6 +15,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'core/app_log.dart';
 import 'core/app_state.dart';
+import 'core/app_rest_mode.dart';
 import 'core/audio_service.dart';
 import 'core/catalog_service.dart';
 import 'core/lyrics_service.dart';
@@ -22,6 +24,7 @@ import 'core/node_service.dart';
 import 'core/auth_service.dart';
 import 'core/persistence.dart';
 import 'core/server_status.dart';
+import 'core/share_links.dart';
 import 'ui/auth.dart';
 import 'ui/design.dart';
 import 'ui/server_unavailable.dart';
@@ -33,6 +36,7 @@ final bool _isDesktop =
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  _configureRestMode();
 
   // Route every uncaught error into the log file, including ones that happen
   // before the UI is up.
@@ -99,6 +103,21 @@ Future<void> main() async {
 
 /// The player state of the signed-in account. Null while the account screens are shown.
 AppState? _liveState;
+
+void _configureRestMode() {
+  appRestMode
+    ..onSleep = () {
+      _liveState?.audio.positionUpdateInterval = const Duration(seconds: 10);
+    }
+    ..onWake = () {
+      final state = _liveState;
+      if (state != null) {
+        state.audio.positionUpdateInterval = state.fullScreen
+            ? const Duration(milliseconds: 250)
+            : const Duration(seconds: 1);
+      }
+    };
+}
 
 /// Builds the player state. It is created only after a session exists,
 /// so it always loads the state of the right account.
@@ -185,11 +204,23 @@ class _RootViewState extends State<_RootView> {
   bool _retrying = false;
   Timer? _healthTimer;
   Timer? _startupTimer;
+  final AppLinks _appLinks = AppLinks();
+  StreamSubscription<Uri>? _linkSubscription;
+  ShareLinkTarget? _pendingLink;
+  bool _handlingLink = false;
 
   @override
   void initState() {
     super.initState();
     _status.addListener(_onStatusChanged);
+    _linkSubscription = _appLinks.uriLinkStream.listen(
+      _acceptLink,
+      onError: (Object error, StackTrace stack) {
+        AppLog.instance.log(LogLevel.error, 'app-links', 'link stream failed',
+            error: error, stack: stack);
+      },
+    );
+    unawaited(_loadInitialLink());
     _startupTimer = Timer(const Duration(milliseconds: 2900), () {
       if (mounted) setState(() => _showStartupSplash = false);
     });
@@ -200,10 +231,60 @@ class _RootViewState extends State<_RootView> {
   void dispose() {
     _healthTimer?.cancel();
     _startupTimer?.cancel();
+    unawaited(_linkSubscription?.cancel());
+    _state?.removeListener(_onPlayerStateChanged);
     _status.removeListener(_onStatusChanged);
     _auth.dispose();
     _status.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadInitialLink() async {
+    try {
+      final uri = await _appLinks.getInitialLink();
+      if (uri != null) _acceptLink(uri);
+    } catch (error, stack) {
+      AppLog.instance.log(
+          LogLevel.error, 'app-links', 'could not read launch link',
+          error: error, stack: stack);
+    }
+  }
+
+  void _acceptLink(Uri uri) {
+    final target = parseShareUri(uri);
+    if (target == null) {
+      if (uri.scheme.toLowerCase() == luminoLinkScheme) {
+        _liveState?.showToast('This Lumino link is invalid or unsupported.');
+      }
+      return;
+    }
+    _pendingLink = target;
+    unawaited(_applyPendingLink());
+  }
+
+  void _onPlayerStateChanged() {
+    if (_state?.ready == true) unawaited(_applyPendingLink());
+  }
+
+  Future<void> _applyPendingLink() async {
+    final state = _state;
+    final target = _pendingLink;
+    if (state == null || !state.ready || target == null || _handlingLink) {
+      return;
+    }
+    _handlingLink = true;
+    _pendingLink = null;
+    try {
+      await openShareLinkTarget(state, target);
+    } catch (error) {
+      state.showToast('Could not open link: $error');
+      AppLog.instance.log(
+          LogLevel.warn, 'app-links', 'failed to resolve shared link',
+          error: error);
+    } finally {
+      _handlingLink = false;
+      if (_pendingLink != null) unawaited(_applyPendingLink());
+    }
   }
 
   void _saveToken(String? token) {
@@ -312,6 +393,8 @@ class _RootViewState extends State<_RootView> {
     final state = _buildAppState(widget.persistence, _auth,
         registeredDisplayName: _auth.displayName);
     _liveState = state;
+    _state?.removeListener(_onPlayerStateChanged);
+    state.addListener(_onPlayerStateChanged);
     unawaited(state.init());
     if (mounted) {
       setState(() {
@@ -352,11 +435,11 @@ class _RootViewState extends State<_RootView> {
     } else {
       content = LuminoShell(state: _state!, onSignOut: signOut);
     }
-    return Stack(
+    final activeContent = Stack(
       fit: StackFit.expand,
       children: [
         content,
-        if (_showStartupSplash)
+        if (_showStartupSplash && !appRestMode.sleeping.value)
           Positioned.fill(
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
@@ -370,7 +453,57 @@ class _RootViewState extends State<_RootView> {
               onRetry: () => unawaited(_retry()), retrying: _retrying),
       ],
     );
+    return ValueListenableBuilder<bool>(
+      valueListenable: appRestMode.sleeping,
+      child: activeContent,
+      builder: (context, sleeping, child) => Stack(
+        fit: StackFit.expand,
+        children: [
+          Offstage(
+            offstage: sleeping,
+            child: TickerMode(enabled: !sleeping, child: child!),
+          ),
+          if (sleeping) const Positioned.fill(child: _AwayScreen()),
+        ],
+      ),
+    );
   }
+}
+
+class _AwayScreen extends StatelessWidget {
+  const _AwayScreen();
+
+  @override
+  Widget build(BuildContext context) => const ColoredBox(
+        color: kBg,
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              LIcon('sun', size: 34, color: kMuted),
+              SizedBox(height: 18),
+              Text(
+                'Optimized while you were away',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: kText,
+                  decoration: TextDecoration.none,
+                ),
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Restoring your player…',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: kMuted,
+                  decoration: TextDecoration.none,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
 }
 
 class _StartupLoading extends StatelessWidget {
@@ -445,6 +578,15 @@ class _AppWindowListener extends WindowListener {
   bool quitting = false;
 
   @override
+  void onWindowMinimize() => appRestMode.sleep();
+
+  @override
+  void onWindowRestore() => appRestMode.wake();
+
+  @override
+  void onWindowFocus() => appRestMode.wake();
+
+  @override
   void onWindowMaximize() => WindowCorners.square.value = true;
 
   @override
@@ -464,6 +606,7 @@ class _AppWindowListener extends WindowListener {
       await windowManager.destroy();
       return;
     }
+    appRestMode.sleep();
     try {
       await windowManager.hide();
     } catch (error) {
@@ -571,6 +714,7 @@ class _TrayHandler with TrayListener {
     try {
       await windowManager.show();
       await windowManager.focus();
+      appRestMode.wake();
     } catch (error) {
       AppLog.instance.log(
           LogLevel.warn, 'tray', 'Could not restore the app window',

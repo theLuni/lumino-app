@@ -507,7 +507,7 @@ class AppState extends ChangeNotifier {
 
   void openFull() {
     fullScreen = true;
-    audio.positionUpdateInterval = const Duration(milliseconds: 100);
+    audio.positionUpdateInterval = const Duration(milliseconds: 250);
     notifyListeners();
   }
 

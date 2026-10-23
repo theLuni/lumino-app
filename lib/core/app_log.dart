@@ -37,7 +37,16 @@ class AppLog {
   Timer? _timer;
   bool _writing = false;
 
-  String get filePath => _dir == null ? '' : '${_dir!.path}${Platform.pathSeparator}$fileName';
+  String get filePath =>
+      _dir == null ? '' : '${_dir!.path}${Platform.pathSeparator}$fileName';
+
+  void _scheduleFlush() {
+    if (_timer != null) return;
+    _timer = Timer(flushInterval, () {
+      _timer = null;
+      unawaited(flush());
+    });
+  }
 
   /// Opens the log file under [appDir]. Lines logged before this call are kept
   /// in memory and written once the file is open.
@@ -52,8 +61,9 @@ class AppLog {
     } catch (_) {
       _sink = null;
     }
-    log(LogLevel.info, 'app', '=== session start: ${Platform.operatingSystem} ${Platform.operatingSystemVersion} ===');
-    _timer ??= Timer.periodic(flushInterval, (_) => unawaited(flush()));
+    log(LogLevel.info, 'app',
+        '=== session start: ${Platform.operatingSystem} ${Platform.operatingSystemVersion} ===');
+    if (_buffer.isNotEmpty) _scheduleFlush();
   }
 
   void log(
@@ -80,6 +90,7 @@ class AppLog {
     _buffer.add(line);
     // ignore: avoid_print
     print(line);
+    _scheduleFlush();
     if (level == LogLevel.error) unawaited(flush());
   }
 
@@ -102,6 +113,7 @@ class AppLog {
       // Ignore disk errors; the next batch will try again.
     } finally {
       _writing = false;
+      if (_buffer.isNotEmpty) _scheduleFlush();
     }
   }
 
@@ -128,12 +140,14 @@ class AppLog {
 
   /// Flushes everything and closes the file. Call before the app quits.
   Future<void> close() async {
+    log(LogLevel.info, 'app', '=== session end ===');
     _timer?.cancel();
     _timer = null;
-    log(LogLevel.info, 'app', '=== session end ===');
     while (_writing) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
+    _timer?.cancel();
+    _timer = null;
     await flush();
     await _sink?.close();
     _sink = null;

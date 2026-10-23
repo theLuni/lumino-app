@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
@@ -10,6 +9,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/app_state.dart';
+import '../core/app_rest_mode.dart';
 import '../core/models.dart';
 import 'actions.dart';
 import 'design.dart';
@@ -159,6 +159,7 @@ class _LuminoShellState extends State<LuminoShell> with WindowListener {
   Future<void> _minimize() async {
     if (!_desktop) return;
     try {
+      appRestMode.sleep();
       await windowManager.minimize();
     } catch (_) {}
   }
@@ -488,31 +489,15 @@ class _MobilePlayerBar extends StatelessWidget {
   }
 }
 
-class _Ambient extends StatefulWidget {
+class _Ambient extends StatelessWidget {
   const _Ambient({required this.black, required this.light});
   final bool black;
   final bool light;
 
   @override
-  State<_Ambient> createState() => _AmbientState();
-}
-
-class _AmbientState extends State<_Ambient>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _drift =
-      AnimationController(vsync: this, duration: const Duration(seconds: 26))
-        ..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _drift.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    if (widget.black) return const ColoredBox(color: Colors.black);
-    if (widget.light) {
+    if (black) return const ColoredBox(color: Colors.black);
+    if (light) {
       return const DecoratedBox(
         decoration: BoxDecoration(
           gradient: LinearGradient(
@@ -524,46 +509,37 @@ class _AmbientState extends State<_Ambient>
       );
     }
     final size = MediaQuery.of(context).size;
-    return AnimatedBuilder(
-      animation: _drift,
-      builder: (context, child) {
-        final t = Curves.easeInOut.transform(_drift.value);
-        final second = Curves.easeInOut.transform(
-          (math.sin(_drift.value * math.pi * 2 - math.pi / 2) + 1) / 2,
-        );
-        return DecoratedBox(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0xFF202020), Color(0xFF101010), Color(0xFF050505)],
-              stops: [0, 0.38, 1],
-            ),
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF202020), Color(0xFF101010), Color(0xFF050505)],
+          stops: [0, 0.38, 1],
+        ),
+      ),
+      child: ClipRect(
+        child: Stack(children: [
+          _Blob(
+            size: size.width * 0.6,
+            color: const Color(0x45383838),
+            left: -size.width * 0.11,
+            top: -size.width * 0.17,
           ),
-          child: ClipRect(
-            child: Stack(children: [
-              _Blob(
-                size: size.width * 0.6,
-                color: const Color(0x45383838),
-                left: -size.width * 0.15 + size.width * 0.08 * t,
-                top: -size.width * 0.2 + size.height * 0.06 * t,
-              ),
-              _Blob(
-                size: size.width * 0.6,
-                color: const Color(0x38202020),
-                left: size.width * 0.8 - size.width * 0.18 * second,
-                top: size.height * 0.1 + size.height * 0.08 * second,
-              ),
-              _Blob(
-                size: size.width * 0.6,
-                color: const Color(0x4D111111),
-                left: size.width * 0.2 - size.width * 0.05 * t,
-                top: size.height - size.width * 0.3 - size.height * 0.06 * t,
-              ),
-            ]),
+          _Blob(
+            size: size.width * 0.6,
+            color: const Color(0x38202020),
+            left: size.width * 0.71,
+            top: size.height * 0.14,
           ),
-        );
-      },
+          _Blob(
+            size: size.width * 0.6,
+            color: const Color(0x4D111111),
+            left: size.width * 0.175,
+            top: size.height - size.width * 0.33,
+          ),
+        ]),
+      ),
     );
   }
 }
@@ -582,8 +558,7 @@ class _Blob extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // A radial gradient gives the same soft blob as a 90px blur, without
-    // blurring a full-window layer on every animation frame.
+    // Use gradients for soft ambient lighting without a costly full-window blur.
     return Positioned(
       left: left,
       top: top,

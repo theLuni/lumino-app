@@ -47,5 +47,11 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 Name: "{autoprograms}\Lumino"; Filename: "{app}\lumino.exe"; IconFilename: "{app}\lumino.ico"
 Name: "{autodesktop}\Lumino"; Filename: "{app}\lumino.exe"; IconFilename: "{app}\lumino.ico"; Tasks: desktopicon
 
+[Registry]
+Root: HKCR; Subkey: "lumino"; ValueType: string; ValueName: ""; ValueData: "URL:Lumino Protocol"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "lumino"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCR; Subkey: "lumino\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; Flags: uninsdeletekey
+Root: HKCR; Subkey: "lumino\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Flags: uninsdeletekey
+
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Запустить Lumino и принять последствия"; Flags: postinstall nowait skipifsilent

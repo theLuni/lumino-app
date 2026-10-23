@@ -170,6 +170,15 @@ class _PublicUserProfilePageState extends State<PublicUserProfilePage> {
           ]),
         ),
         const SizedBox(height: 24),
+        if (username.isNotEmpty) ...[
+          ChipButton(
+            label: 'Share profile',
+            icon: 'share',
+            ghost: true,
+            onTap: () => shareProfile(context, widget.state, username),
+          ),
+          const SizedBox(height: 24),
+        ],
         if (_publicPlaylists.isNotEmpty) ...[
           const Text('Playlists',
               style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
@@ -179,15 +188,35 @@ class _PublicUserProfilePageState extends State<PublicUserProfilePage> {
             runSpacing: 14,
             children: [
               for (final playlist in _publicPlaylists)
-                _PublicPlaylistCard(
-                  playlist: playlist,
-                  onTap: () => widget.state.go(
-                    'public-playlist',
-                    arg: {
-                      ...playlist,
-                      'username': username,
-                      'owner': display,
-                    },
+                SizedBox(
+                  width: 166,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _PublicPlaylistCard(
+                        playlist: playlist,
+                        onTap: () => widget.state.go(
+                          'public-playlist',
+                          arg: {
+                            ...playlist,
+                            'username': username,
+                            'owner': display,
+                          },
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      ChipButton(
+                        label: 'Share',
+                        icon: 'share',
+                        ghost: true,
+                        onTap: () => sharePublicPlaylist(
+                          context,
+                          widget.state,
+                          username: username,
+                          playlistId: (playlist['id'] ?? '').toString(),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
             ],
