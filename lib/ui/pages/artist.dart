@@ -406,7 +406,8 @@ class MixPage extends StatelessWidget {
     final tracks = allTracks.where((track) => track.cover.isNotEmpty).toList();
     if (tracks.isEmpty) {
       if (allTracks.every((track) => state.noCover.contains(track.id))) {
-        return const EmptyState(text: 'No mix tracks have available cover art.');
+        return const EmptyState(
+            text: 'No mix tracks have available cover art.');
       }
       return const EmptyState(text: 'Preparing daily mix covers…');
     }
@@ -904,6 +905,26 @@ class _ReleaseRowState extends State<_ReleaseRow> {
                       fontSize: 13,
                       color: Color(0x80FFFFFF),
                       fontFeatures: [ui.FontFeature.tabularFigures()])),
+            const SizedBox(width: 8),
+            AnimatedBuilder(
+              animation: widget.state,
+              builder: (context, _) {
+                final liked = widget.state.liked.contains(track.key);
+                return IconAction(
+                  icon: 'heart',
+                  size: 34,
+                  iconSize: 17,
+                  tooltip: liked ? 'Unlike' : 'Like',
+                  active: liked,
+                  filled: liked,
+                  color:
+                      liked ? const Color(0xFFFF5C78) : const Color(0x80FFFFFF),
+                  hoverColor: const Color(0xFFFF5C78),
+                  onTap: () => widget.state
+                      .toggleLike(widget.state.registerTrack(track)),
+                );
+              },
+            ),
             if (_hovered)
               GestureDetector(
                 behavior: HitTestBehavior.opaque,

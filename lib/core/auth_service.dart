@@ -159,12 +159,44 @@ class AuthService {
     return _maps(data['users']);
   }
 
-  Future<List<Map<String, dynamic>>> chatMessages(String chatId) async {
+  Future<List<Map<String, dynamic>>> chatMessages(
+    String chatId, {
+    String query = '',
+    String day = '',
+    int? aroundId,
+  }) async {
     final data = await _call(
       'GET',
-      '/api/chat/messages?chat_id=${Uri.encodeQueryComponent(chatId)}',
+      '/api/chat/messages?chat_id=${Uri.encodeQueryComponent(chatId)}'
+          '&q=${Uri.encodeQueryComponent(query)}'
+          '${day.isEmpty ? '' : '&day=${Uri.encodeQueryComponent(day)}'}'
+          '${aroundId == null ? '' : '&around_id=$aroundId'}',
     );
     return _maps(data['messages']);
+  }
+
+  Future<Set<String>> chatMessageDays(String chatId) async {
+    final data = await _call(
+      'GET',
+      '/api/chat/days?chat_id=${Uri.encodeQueryComponent(chatId)}',
+    );
+    final days = data['days'];
+    return days is List ? days.whereType<String>().toSet() : <String>{};
+  }
+
+  Future<void> hideChat(String chatId) async {
+    await _post('/api/chat/hide', {'chat_id': chatId});
+  }
+
+  Future<void> deleteChat(String chatId) async {
+    await _post('/api/chat/delete', {'chat_id': chatId});
+  }
+
+  Future<void> deleteChatMessage(String chatId, int messageId) async {
+    await _post('/api/chat/message/delete', {
+      'chat_id': chatId,
+      'message_id': messageId,
+    });
   }
 
   Future<String> createDirectChat(String username) async {
@@ -183,6 +215,13 @@ class AuthService {
       'text': text,
       if (image.isNotEmpty) 'image': image,
       if (track != null) 'track': track,
+    });
+  }
+
+  Future<void> setChatTyping(String chatId, bool isTyping) async {
+    await _post('/api/chat/typing', {
+      'chat_id': chatId,
+      'is_typing': isTyping,
     });
   }
 

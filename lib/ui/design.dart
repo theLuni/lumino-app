@@ -45,9 +45,11 @@ class ThemeScope extends InheritedWidget {
       {super.key,
       required this.light,
       required this.black,
+      this.openArtwork = true,
       required super.child});
   final bool light;
   final bool black;
+  final bool openArtwork;
 
   Color get foreground => light ? const Color(0xFF17181C) : kText;
   Color get mutedForeground => light ? const Color(0xFF686B73) : kMuted;
@@ -63,7 +65,9 @@ class ThemeScope extends InheritedWidget {
 
   @override
   bool updateShouldNotify(ThemeScope oldWidget) =>
-      light != oldWidget.light || black != oldWidget.black;
+      light != oldWidget.light ||
+      black != oldWidget.black ||
+      openArtwork != oldWidget.openArtwork;
 }
 
 class LuminoBadge extends StatelessWidget {
@@ -139,6 +143,7 @@ const Map<String, String> kIconPaths = {
   'chevR': 'M9 5l7 7-7 7',
   'chevD': 'M5 9l7 7 7-7',
   'back': 'M19 12H5 M11 6l-6 6 6 6',
+  'arrowUp': 'M12 19V5 M5.5 11.5 12 5l6.5 6.5',
   'exit': 'M10 17l5-5-5-5 M15 12H3 M21 4v16',
   'min': 'M5.5 12h13',
   'max':
@@ -146,7 +151,11 @@ const Map<String, String> kIconPaths = {
   'restore':
       'M5 8.5h8.5a2 2 0 0 1 2 2V19a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z M9 8.5V7a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-1.5',
   'close': 'M6 6l12 12 M18 6 6 18',
+  'trash':
+      'M4 7h16 M10 11v6 M14 11v6 M6 7l1 14h10l1-14 M9 7V4h6v3',
   'clock': 'M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0z M12 7.5V12l3 2',
+  'calendar':
+      'M7 3v3 M17 3v3 M4 6h16v15H4z M4 10h16 M8 14h1 M12 14h1 M16 14h1 M8 18h1 M12 18h1',
   'bolt': 'M13 2 4 14h6l-1 8 10-13h-6z',
   'edit': 'M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4.5 1.5L4 16z M14.5 5.5l4 4',
   'spark':
@@ -805,7 +814,10 @@ class CoverArt extends StatelessWidget {
     if (square) box = AspectRatio(aspectRatio: 1, child: box);
     if (size != null) box = SizedBox(width: size, height: size, child: box);
     final showImage = onTap ??
-        (openArtwork && track != null && track!.cover.isNotEmpty
+        (openArtwork &&
+                ThemeScope.of(context).openArtwork &&
+                track != null &&
+                track!.cover.isNotEmpty
             ? () => showArtwork(
                   context,
                   track!.cover,
@@ -826,7 +838,7 @@ class CoverArt extends StatelessWidget {
 }
 
 Future<void> showArtwork(BuildContext context, String url, String title) async {
-  if (url.isEmpty) return;
+  if (url.isEmpty || !ThemeScope.of(context).openArtwork) return;
   await showDialog<void>(
     context: context,
     barrierColor: const Color(0xE6000000),
@@ -2663,9 +2675,10 @@ class LuminoMenuItem {
 
 Future<void> showLuminoMenu(BuildContext context, Offset globalPosition,
     List<LuminoMenuItem> items) async {
-  final size = MediaQuery.of(context).size;
-  const menuWidth = 232.0;
-  final menuHeight = items.length * 36.0 + 12;
+  final media = MediaQuery.of(context);
+  final size = media.size;
+  final menuWidth = math.min(232.0, size.width - 16).clamp(1.0, 232.0);
+  final menuHeight = math.min(items.length * 36.0 + 12, size.height - 16);
   var left = globalPosition.dx - menuWidth;
   var top = globalPosition.dy + 6;
   if (top + menuHeight > size.height - 8) {
@@ -2692,18 +2705,23 @@ Future<void> showLuminoMenu(BuildContext context, Offset globalPosition,
               radius: 14,
               blur: 24,
               padding: const EdgeInsets.all(6),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (final item in items)
-                    _MenuItemRow(
-                      item: item,
-                      onTap: () {
-                        Navigator.of(context).pop();
-                        item.onTap();
-                      },
-                    ),
-                ],
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: menuHeight),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (final item in items)
+                        _MenuItemRow(
+                          item: item,
+                          onTap: () {
+                            Navigator.of(context).pop();
+                            item.onTap();
+                          },
+                        ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
@@ -2742,13 +2760,20 @@ class _MenuItemRow extends StatelessWidget {
                     : const Color(0xE6FFFFFF),
                 filled: item.filled),
             const SizedBox(width: 12),
-            Text(item.label,
+            Expanded(
+              child: Text(
+                item.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                    color: item.danger
-                        ? const Color(0xFFFF7B7B)
-                        : const Color(0xF0FFFFFF))),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  color: item.danger
+                      ? const Color(0xFFFF7B7B)
+                      : const Color(0xF0FFFFFF),
+                ),
+              ),
+            ),
           ]),
         ),
       ),

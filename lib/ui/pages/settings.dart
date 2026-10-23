@@ -53,21 +53,8 @@ class _SettingsPageState extends State<SettingsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: double.infinity,
-                margin: const EdgeInsets.only(bottom: 22),
-                padding: const EdgeInsets.fromLTRB(22, 20, 24, 20),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(22),
-                  border: Border.all(color: scope.stroke),
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: scope.light
-                        ? const [Color(0xFFE8E8EA), Color(0xFFF7F7F8)]
-                        : const [Color(0xFF252527), Color(0xFF151516)],
-                  ),
-                ),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 22),
                 child: Row(children: [
                   SizedBox(
                     width: 28,
@@ -105,32 +92,6 @@ class _SettingsPageState extends State<SettingsPage> {
                       ],
                     ),
                   ),
-                  if (!compact) const SizedBox(width: 10),
-                  if (!compact)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 11, vertical: 7),
-                      decoration: BoxDecoration(
-                        color: scope.light
-                            ? const Color(0x12000000)
-                            : const Color(0x12FFFFFF),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: scope.stroke),
-                      ),
-                      child: Row(mainAxisSize: MainAxisSize.min, children: [
-                        const Icon(Icons.circle,
-                            size: 7, color: Color(0xFF9A9A9E)),
-                        const SizedBox(width: 7),
-                        Text(
-                          'Preferences',
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w600,
-                            color: scope.mutedForeground,
-                          ),
-                        ),
-                      ]),
-                    ),
                 ]),
               ),
               Reveal(
@@ -144,14 +105,28 @@ class _SettingsPageState extends State<SettingsPage> {
               Reveal(
                   index: 1,
                   child: _SetCard(
+                    icon: 'eye',
+                    title: 'Artwork previews',
+                    subtitle: 'Open cover artwork in fullscreen when clicked.',
+                    trailing: SwitchPill(
+                      value: state.settings.openArtwork,
+                      onTap: () =>
+                          state.setArtworkOpen(!state.settings.openArtwork),
+                    ),
+                    hasBody: false,
+                    child: const SizedBox.shrink(),
+                  )),
+              Reveal(
+                  index: 2,
+                  child: _SetCard(
                     icon: 'volume',
                     title: 'Streaming quality',
                     subtitle: 'Higher quality uses more data.',
                     child: _QualitySeg(state: state),
                   )),
-              Reveal(index: 2, child: _EqCard(state: state)),
+              Reveal(index: 3, child: _EqCard(state: state)),
               Reveal(
-                  index: 3,
+                  index: 4,
                   child: _SetCard(
                     icon: 'bolt',
                     title: 'Server',
@@ -177,7 +152,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     child: _ServerList(state: state),
                   )),
               Reveal(
-                  index: 4,
+                  index: 5,
                   child: _SetCard(
                     icon: 'folderPlus',
                     title: 'Import music',
@@ -191,7 +166,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     child: const SizedBox.shrink(),
                   )),
               Reveal(
-                  index: 5,
+                  index: 6,
                   child: _SetCard(
                     icon: 'user',
                     title: 'Account',
@@ -244,11 +219,6 @@ class _SetCard extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: scope.light ? const Color(0xEFFFFFFF) : const Color(0x0BFFFFFF),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: scope.stroke),
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -708,11 +678,6 @@ class _EqCardState extends State<_EqCard> {
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: scope.light ? const Color(0xEFFFFFFF) : const Color(0x0BFFFFFF),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: scope.stroke),
-      ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           LIcon('volume', size: 20, color: scope.foreground),

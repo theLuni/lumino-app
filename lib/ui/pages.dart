@@ -16,9 +16,11 @@ bool pageHasBack(String name) => const {
       'mix',
       'liked',
       'playlist',
+      'public-playlist',
       'release',
       'profile',
       'user-profile',
+      'liked-releases',
       'chats',
     }.contains(name);
 
@@ -29,7 +31,9 @@ String pageIdentity(AppState state) {
     return '${state.pageName}:${arg.release.name}:${arg.artist}:${arg.highlightTrack}';
   }
   if (arg is ChatShareArg) return 'chats:${arg.nonce}';
-  if (arg is Map) return '${state.pageName}:${arg['username'] ?? ''}';
+  if (arg is Map) {
+    return '${state.pageName}:${arg['username'] ?? ''}:${arg['id'] ?? ''}';
+  }
   return state.pageName;
 }
 
@@ -65,6 +69,16 @@ Widget buildPage(AppState state, {required Future<void> Function() onSignOut}) {
           key: ValueKey('user-profile:${user['username'] ?? ''}'),
           state: state,
           user: user);
+    case 'liked-releases':
+      final user = state.pageArg is Map
+          ? (state.pageArg as Map)
+              .map((key, value) => MapEntry(key.toString(), value))
+          : <String, dynamic>{};
+      return LikedReleasesPage(
+        key: ValueKey('liked-releases:${user['username'] ?? ''}'),
+        state: state,
+        user: user,
+      );
     case 'artist':
       final name = state.pageArg is String ? state.pageArg as String : '';
       return ArtistPage(
@@ -95,6 +109,17 @@ Widget buildPage(AppState state, {required Future<void> Function() onSignOut}) {
       }
       return PlaylistPage(
           key: ValueKey('playlist:$id'), state: state, playlistId: id);
+    case 'public-playlist':
+      final playlist = state.pageArg is Map
+          ? (state.pageArg as Map)
+              .map((key, value) => MapEntry(key.toString(), value))
+          : <String, dynamic>{};
+      return PublicPlaylistPage(
+        key: ValueKey(
+            'public-playlist:${playlist['username'] ?? ''}:${playlist['id'] ?? ''}'),
+        state: state,
+        playlist: playlist,
+      );
     default:
       return const PagePadding(child: EmptyState(text: 'Page not found'));
   }

@@ -7,6 +7,16 @@ import 'design.dart';
 
 /// Shared context-menu and playlist actions used by the whole UI.
 
+Future<void> shareTrackInChat(
+    BuildContext context, AppState state, Track track) async {
+  if (!context.mounted) return;
+  if (state.fullScreen) state.closeFull();
+  state.go(
+    'chats',
+    arg: ChatShareArg(track, DateTime.now().microsecondsSinceEpoch),
+  );
+}
+
 Future<void> openTrackRelease(AppState state, Track track) async {
   final release = await state.releaseForTrack(track);
   if (state.fullScreen) state.closeFull();
@@ -57,10 +67,7 @@ Future<void> openTrackMenu(
       if (artist.isNotEmpty) state.go('artist', arg: artist);
     }),
     LuminoMenuItem('Share', 'share', () async {
-      await copyToClipboard(track.src.isNotEmpty
-          ? track.src
-          : '${track.artists.join(', ')} – ${track.title}');
-      state.showToast('Link copied to clipboard');
+      await shareTrackInChat(context, state, track);
     }),
   ];
   if (playlistId != null) {

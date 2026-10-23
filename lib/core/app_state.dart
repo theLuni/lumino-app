@@ -503,11 +503,13 @@ class AppState extends ChangeNotifier {
 
   void openFull() {
     fullScreen = true;
+    audio.positionUpdateInterval = const Duration(milliseconds: 100);
     notifyListeners();
   }
 
   void closeFull() {
     fullScreen = false;
+    audio.positionUpdateInterval = const Duration(seconds: 1);
     notifyListeners();
   }
 
@@ -1785,6 +1787,12 @@ class AppState extends ChangeNotifier {
     if (!const {'low', 'normal', 'high'}.contains(quality)) return;
     settings.quality = quality;
     await audio.setQuality(quality);
+    save();
+    notifyListeners();
+  }
+
+  void setArtworkOpen(bool enabled) {
+    settings.openArtwork = enabled;
     save();
     notifyListeners();
   }

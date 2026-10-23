@@ -62,6 +62,31 @@ void main() {
     });
   });
 
+  group('AppSettings', () {
+    test('persists the artwork preview preference', () {
+      final settings = AppSettings()..openArtwork = false;
+      final restored = AppSettings.fromJson(settings.toJson());
+      expect(restored.openArtwork, isFalse);
+      expect(AppSettings.fromJson({}).openArtwork, isTrue);
+    });
+  });
+
+  group('Playlist visibility', () {
+    test('playlists are private by default and retain public state', () {
+      final playlist = Playlist(
+        id: 'test',
+        name: 'Test',
+        ids: const [],
+      );
+      expect(playlist.isPublic, isFalse);
+      final restored = Playlist.fromJson(
+        playlist.copy().toJson()..['public'] = true,
+      );
+      expect(restored.isPublic, isTrue);
+      expect(restored.copy().isPublic, isTrue);
+    });
+  });
+
   group('levenshtein', () {
     test('basic distances', () {
       expect(levenshtein('kitten', 'sitting'), 3);

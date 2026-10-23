@@ -14,7 +14,11 @@ class AudioService {
     }));
     _subscriptions.add(player.stream.position.listen((value) {
       position = value;
-      positionNotifier.value = value;
+      final delta = (value - positionNotifier.value).inMilliseconds;
+      final threshold = positionUpdateInterval.inMilliseconds;
+      if (delta >= threshold || delta <= -threshold) {
+        positionNotifier.value = value;
+      }
     }));
     _subscriptions.add(player.stream.duration.listen((value) {
       duration = value;
@@ -47,6 +51,7 @@ class AudioService {
   String lastError = '';
   bool _ended = false;
   bool _loaded = false;
+  Duration positionUpdateInterval = const Duration(milliseconds: 250);
 
   VoidCallback? onEnded;
   void Function(String message)? onError;
@@ -107,13 +112,25 @@ class AudioService {
 
   Future<void> setQuality(String quality) async {
     try {
-      final seconds = quality == 'low' ? '6' : (quality == 'high' ? '60' : '20');
+      final seconds =
+          quality == 'low' ? '6' : (quality == 'high' ? '60' : '20');
       await _setProperty('demuxer-readahead-secs', seconds);
       await _setProperty('cache-secs', seconds);
     } catch (_) {}
   }
 
-  static const List<int> eqFrequencies = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+  static const List<int> eqFrequencies = [
+    32,
+    64,
+    125,
+    250,
+    500,
+    1000,
+    2000,
+    4000,
+    8000,
+    16000
+  ];
 
   /// Applies the equalizer. mpv's libavfilter `equalizer` accepts a chain; an
   /// empty chain means "equalizer off".

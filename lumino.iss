@@ -13,8 +13,8 @@ DefaultDirName={autopf}\Lumino
 DefaultGroupName=Lumino
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
-SetupIconFile=C:\Users\luni\Music\flutter_app\assets\icon.ico
-OutputDir=C:\Users\luni\Music\flutter_app\Output
+SetupIconFile={#SourcePath}\assets\icon.ico
+OutputDir={#SourcePath}\Output
 OutputBaseFilename=Lumino_Setup
 WizardStyle=modern
 WizardSizePercent=120
@@ -37,8 +37,8 @@ FinishedHeadingLabel=Lumino успешно материализовался!
 FinishedLabel=Установка завершена.%n%nПоздравляем. Ваш компьютер теперь в клубе Lumino.
 
 [Files]
-Source: "C:\Users\luni\Music\flutter_app\assets\icon.ico"; DestDir: "{app}"; DestName: "lumino.ico"; Flags: ignoreversion
-Source: "C:\Users\luni\Music\flutter_app\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourcePath}\assets\icon.ico"; DestDir: "{app}"; DestName: "lumino.ico"; Flags: ignoreversion
+Source: "{#SourcePath}\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Tasks]
 Name: "desktopicon"; Description: "Создать ярлык на рабочем столе"; GroupDescription: "Дополнительные приколы:"; Flags: unchecked

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../core/app_state.dart';
 import '../../core/models.dart';
 import '../../core/utils.dart';
+import '../actions.dart';
 import '../design.dart';
 
 class PublicUserProfilePage extends StatefulWidget {
@@ -22,6 +23,7 @@ class PublicUserProfilePage extends StatefulWidget {
 class _PublicUserProfilePageState extends State<PublicUserProfilePage> {
   late Map<String, dynamic> _profile = widget.user;
   List<Track> _likedTracks = [];
+  List<Map<String, dynamic>> _publicPlaylists = [];
   int? _avatarColor;
   String? _error;
   bool _loading = true;
@@ -46,10 +48,16 @@ class _PublicUserProfilePageState extends State<PublicUserProfilePage> {
       final tracks = asList(profile['liked_tracks'])
           .map((raw) => Track.fromJson(asMap(raw)))
           .toList();
+      final publicPlaylists = asList(profile['public_playlists'])
+          .whereType<Map>()
+          .map(
+              (raw) => raw.map((key, value) => MapEntry(key.toString(), value)))
+          .toList();
       if (!mounted) return;
       setState(() {
         _profile = {...widget.user, ...profile};
         _likedTracks = tracks;
+        _publicPlaylists = publicPlaylists;
         _loading = false;
       });
       widget.state.ensureCovers(tracks, priority: true);
@@ -162,6 +170,30 @@ class _PublicUserProfilePageState extends State<PublicUserProfilePage> {
           ]),
         ),
         const SizedBox(height: 24),
+        if (_publicPlaylists.isNotEmpty) ...[
+          const Text('Playlists',
+              style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 14,
+            runSpacing: 14,
+            children: [
+              for (final playlist in _publicPlaylists)
+                _PublicPlaylistCard(
+                  playlist: playlist,
+                  onTap: () => widget.state.go(
+                    'public-playlist',
+                    arg: {
+                      ...playlist,
+                      'username': username,
+                      'owner': display,
+                    },
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 24),
+        ],
         const Text('Liked releases',
             style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
         const SizedBox(height: 14),
@@ -184,10 +216,11 @@ class _PublicUserProfilePageState extends State<PublicUserProfilePage> {
                 .clamp(2, 7)
                 .toInt();
             final items = groups.values.toList();
+            final preview = items.take(5).toList();
             final rows = <Widget>[];
-            for (var i = 0; i < items.length; i += columns) {
+            for (var i = 0; i < preview.length; i += columns) {
               final slice =
-                  items.sublist(i, (i + columns).clamp(0, items.length));
+                  preview.sublist(i, (i + columns).clamp(0, preview.length));
               rows.add(Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -202,12 +235,306 @@ class _PublicUserProfilePageState extends State<PublicUserProfilePage> {
                   ],
                 ],
               ));
-              if (i + columns < items.length) {
+              if (i + columns < preview.length) {
                 rows.add(const SizedBox(height: 18));
               }
             }
-            return Column(children: rows);
+            return Column(children: [
+              ...rows,
+              if (items.length > 5) ...[
+                const SizedBox(height: 14),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: GhostButton(
+                    label: 'Show More',
+                    onTap: () =>
+                        widget.state.go('liked-releases', arg: _profile),
+                  ),
+                ),
+              ],
+            ]);
           }),
+      ]),
+    );
+  }
+}
+
+class LikedReleasesPage extends StatefulWidget {
+  const LikedReleasesPage({super.key, required this.state, required this.user});
+
+  final AppState state;
+  final Map<String, dynamic> user;
+
+  @override
+  State<LikedReleasesPage> createState() => _LikedReleasesPageState();
+}
+
+class _LikedReleasesPageState extends State<LikedReleasesPage> {
+  List<_LikedGroup> _groups = [];
+  String? _error;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    final username = (widget.user['username'] ?? '').toString();
+    try {
+      final profile = await widget.state.auth.publicUserProfile(username);
+      final grouped = <String, _LikedGroup>{};
+      for (final raw in asList(profile['liked_tracks'])) {
+        final track = Track.fromJson(asMap(raw));
+        final name = track.album.trim().isEmpty ? track.title : track.album;
+        final key = '${norm(name)}|${norm(track.primary)}';
+        grouped.putIfAbsent(key, () => _LikedGroup(name, track)).count++;
+      }
+      if (!mounted) return;
+      setState(() {
+        _groups = grouped.values.toList();
+        _loading = false;
+      });
+      widget.state.ensureCovers(_groups.map((group) => group.first).toList(),
+          priority: true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Could not load liked releases: $error';
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final display =
+        (widget.user['display_name'] ?? widget.user['username'] ?? 'User')
+            .toString();
+    final compact = MediaQuery.sizeOf(context).width < 600;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          compact ? 18 : 32, compact ? 18 : 60, compact ? 18 : 32, 28),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text("$display's liked releases",
+            style: TextStyle(
+                fontSize: compact ? 26 : 34, fontWeight: FontWeight.w800)),
+        const SizedBox(height: 20),
+        if (_loading)
+          const Center(child: CircularProgressIndicator(strokeWidth: 2))
+        else if (_error != null)
+          EmptyState(text: _error!, left: true)
+        else if (_groups.isEmpty)
+          const EmptyState(text: 'No liked releases yet.', left: true)
+        else
+          _LikedReleaseGrid(state: widget.state, groups: _groups),
+      ]),
+    );
+  }
+}
+
+class _LikedReleaseGrid extends StatelessWidget {
+  const _LikedReleaseGrid({required this.state, required this.groups});
+  final AppState state;
+  final List<_LikedGroup> groups;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+        builder: (context, constraints) {
+          const gap = 16.0;
+          final columns = ((constraints.maxWidth + gap) / (160 + gap))
+              .floor()
+              .clamp(2, 7)
+              .toInt();
+          final rows = <Widget>[];
+          for (var i = 0; i < groups.length; i += columns) {
+            final slice =
+                groups.sublist(i, (i + columns).clamp(0, groups.length));
+            rows.add(Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var j = 0; j < columns; j++) ...[
+                  if (j > 0) const SizedBox(width: gap),
+                  Expanded(
+                    child: j < slice.length
+                        ? _LikedReleaseCard(state: state, group: slice[j])
+                        : const SizedBox(),
+                  ),
+                ],
+              ],
+            ));
+            if (i + columns < groups.length) {
+              rows.add(const SizedBox(height: 18));
+            }
+          }
+          return Column(children: rows);
+        },
+      );
+}
+
+class _PublicPlaylistCard extends StatelessWidget {
+  const _PublicPlaylistCard({required this.playlist, required this.onTap});
+  final Map<String, dynamic> playlist;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = (playlist['name'] ?? 'Playlist').toString();
+    final cover = (playlist['cover'] ?? '').toString();
+    return SizedBox(
+      width: 166,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: AspectRatio(
+              aspectRatio: 1,
+              child: cover.isEmpty
+                  ? const ColoredBox(
+                      color: Color(0xFF202024),
+                      child: Center(
+                          child: LIcon('note', size: 34, color: Colors.white)),
+                    )
+                  : imageWidget(cover, fit: BoxFit.cover),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w600)),
+        ]),
+      ),
+    );
+  }
+}
+
+class PublicPlaylistPage extends StatelessWidget {
+  const PublicPlaylistPage(
+      {super.key, required this.state, required this.playlist});
+
+  final AppState state;
+  final Map<String, dynamic> playlist;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = (playlist['name'] ?? 'Playlist').toString();
+    final owner =
+        (playlist['owner'] ?? playlist['username'] ?? 'User').toString();
+    final cover = (playlist['cover'] ?? '').toString();
+    final tracks = asList(playlist['tracks'])
+        .whereType<Map>()
+        .map((raw) => Track.fromJson(asMap(raw)))
+        .toList();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(32, 60, 32, 28),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: SizedBox(
+              width: 180,
+              height: 180,
+              child: cover.isEmpty
+                  ? const ColoredBox(
+                      color: Color(0xFF202024),
+                      child: Center(
+                          child: LIcon('note', size: 42, color: Colors.white)),
+                    )
+                  : imageWidget(cover, fit: BoxFit.cover),
+            ),
+          ),
+          const SizedBox(width: 24),
+          Expanded(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('PUBLIC PLAYLIST',
+                  style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 1.4,
+                      color: ThemeScope.of(context).mutedForeground)),
+              const SizedBox(height: 8),
+              Text(name,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 36, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 8),
+              Text('By $owner',
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: ThemeScope.of(context).mutedForeground)),
+            ]),
+          ),
+        ]),
+        const SizedBox(height: 24),
+        if (tracks.isEmpty)
+          const EmptyState(text: 'This playlist has no available tracks.')
+        else
+          Expanded(
+            child: ListView.separated(
+              itemCount: tracks.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 6),
+              itemBuilder: (context, index) {
+                final track = tracks[index];
+                return Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: () => openTrackRelease(state, track),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
+                      child: Row(children: [
+                        SizedBox(
+                          width: 38,
+                          height: 38,
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(6),
+                            child: track.cover.isEmpty
+                                ? const ColoredBox(
+                                    color: Color(0xFF202024),
+                                    child: Center(
+                                        child: LIcon('note',
+                                            size: 18, color: Colors.white)),
+                                  )
+                                : imageWidget(track.cover, fit: BoxFit.cover),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(track.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w600)),
+                                const SizedBox(height: 2),
+                                Text(track.primary,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        color: ThemeScope.of(context)
+                                            .mutedForeground)),
+                              ]),
+                        ),
+                        const SizedBox(width: 8),
+                        const LIcon('chevR', size: 16),
+                      ]),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
       ]),
     );
   }
@@ -349,6 +676,26 @@ class _ProfilePageState extends State<ProfilePage> {
       final group = groups.putIfAbsent(key, () => _LikedGroup(name, track));
       group.count++;
     }
+    final availableTracks = state.availableTracks();
+    final profilePlaylists = state.playlists.map((playlist) {
+      var cover = playlist.cover;
+      if (cover.isEmpty) {
+        for (final id in playlist.ids) {
+          final track = availableTracks
+              .where((candidate) => candidate.id == id)
+              .firstOrNull;
+          if (track != null && track.cover.isNotEmpty) {
+            cover = track.cover;
+            break;
+          }
+        }
+      }
+      return <String, dynamic>{
+        'id': playlist.id,
+        'name': playlist.name,
+        'cover': cover,
+      };
+    }).toList();
     state.ensureCovers(groups.values.take(8).map((g) => g.first),
         priority: true);
 
@@ -446,6 +793,37 @@ class _ProfilePageState extends State<ProfilePage> {
           ),
           Padding(
             padding: EdgeInsets.fromLTRB(
+                compact ? 18 : 32, 18, compact ? 18 : 32, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Playlists',
+                    style:
+                        TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 14),
+                if (profilePlaylists.isEmpty)
+                  const EmptyState(
+                      text: 'Your playlists will appear here.', left: true)
+                else
+                  Wrap(
+                    spacing: 14,
+                    runSpacing: 14,
+                    children: [
+                      for (final playlist in profilePlaylists)
+                        _PublicPlaylistCard(
+                          playlist: playlist,
+                          onTap: () => state.go(
+                            'playlist',
+                            arg: playlist['id'] as String,
+                          ),
+                        ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: EdgeInsets.fromLTRB(
                 compact ? 18 : 32, 18, compact ? 18 : 32, 28),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -467,10 +845,11 @@ class _ProfilePageState extends State<ProfilePage> {
                         .clamp(2, 7)
                         .toInt();
                     final items = groups.values.toList();
+                    final preview = items.take(5).toList();
                     final rows = <Widget>[];
-                    for (var i = 0; i < items.length; i += columns) {
-                      final slice = items.sublist(
-                          i, (i + columns).clamp(0, items.length).toInt());
+                    for (var i = 0; i < preview.length; i += columns) {
+                      final slice = preview.sublist(
+                          i, (i + columns).clamp(0, preview.length).toInt());
                       rows.add(Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -485,11 +864,30 @@ class _ProfilePageState extends State<ProfilePage> {
                           ],
                         ],
                       ));
-                      if (i + columns < items.length) {
+                      if (i + columns < preview.length) {
                         rows.add(const SizedBox(height: 18));
                       }
                     }
-                    return Column(children: rows);
+                    return Column(children: [
+                      ...rows,
+                      if (items.length > 5) ...[
+                        const SizedBox(height: 14),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: GhostButton(
+                            label: 'Show More',
+                            onTap: () => state.go(
+                              'liked-releases',
+                              arg: {
+                                'username': state.auth.username ?? '',
+                                'display_name': state.auth.displayName ?? '',
+                                'avatar': state.profile.avatar,
+                              },
+                            ),
+                          ),
+                        ),
+                      ],
+                    ]);
                   }),
               ],
             ),
@@ -532,7 +930,8 @@ class _LikedReleaseCardState extends State<_LikedReleaseCard> {
     }
     if (!mounted) return;
     setState(() => _opening = false);
-    if (!const {'profile', 'user-profile'}.contains(widget.state.pageName)) {
+    if (!const {'profile', 'user-profile', 'liked-releases'}
+        .contains(widget.state.pageName)) {
       return;
     }
     if (release != null) {

@@ -187,6 +187,8 @@ CREATE TABLE IF NOT EXISTS chat_members (
     user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     active    INTEGER NOT NULL DEFAULT 1,
     joined_at TEXT NOT NULL,
+    last_read_message_id INTEGER NOT NULL DEFAULT 0,
+    typing_at TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (chat_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS chat_messages (
@@ -258,6 +260,17 @@ def init_db() -> None:
     _load_code_secret()
     with _db_lock, closing(db()) as conn:
         conn.executescript(SCHEMA)
+        member_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(chat_members)")
+        }
+        if "last_read_message_id" not in member_columns:
+            conn.execute(
+                "ALTER TABLE chat_members ADD COLUMN last_read_message_id INTEGER NOT NULL DEFAULT 0"
+            )
+        if "typing_at" not in member_columns:
+            conn.execute(
+                "ALTER TABLE chat_members ADD COLUMN typing_at TEXT NOT NULL DEFAULT ''"
+            )
         conn.execute("DELETE FROM chats WHERE type != 'direct'")
         conn.execute("DELETE FROM sessions WHERE expires_at < ?", (iso(),))
         conn.commit()
@@ -312,6 +325,16 @@ def user_by_token(token: str):
     if expires < now():
         drop_session(token)
         return None
+    try:
+        last_seen = dt.datetime.fromisoformat(row["last_seen"])
+    except (TypeError, ValueError):
+        last_seen = dt.datetime.min
+    if last_seen.tzinfo is not None:
+        last_seen = last_seen.astimezone().replace(tzinfo=None)
+    if (now() - last_seen).total_seconds() >= 30:
+        timestamp = iso()
+        execute("UPDATE users SET last_seen = ? WHERE id = ?", (timestamp, row["id"]))
+        row["last_seen"] = timestamp
     # Активная сессия продлевается: вход не слетает, пока пользователь заходит хотя бы раз в 15 дней.
     if (expires - now()).total_seconds() < SESSION_TTL / 2:
         execute("UPDATE sessions SET expires_at = ? WHERE token = ?",
@@ -356,12 +379,12 @@ def _public_user_profile(user) -> dict:
     result = public_user(dict(user))
     row = one("SELECT data FROM user_state WHERE user_id = ?", (user["id"],))
     if not row:
-        result.update(avatar="", liked_tracks=[])
+        result.update(avatar="", liked_tracks=[], public_playlists=[])
         return result
     try:
         state = json.loads(row["data"])
     except (ValueError, TypeError):
-        result.update(avatar="", liked_tracks=[])
+        result.update(avatar="", liked_tracks=[], public_playlists=[])
         return result
 
     profile = state.get("profile", {}) if isinstance(state, dict) else {}
@@ -393,6 +416,48 @@ def _public_user_profile(user) -> dict:
             "releaseType": str(track.get("releaseType") or ""),
         })
     result["liked_tracks"] = liked_tracks
+    saved_tracks_by_id = {
+        str(track.get("id") or ""): track
+        for track in tracks if isinstance(track, dict)
+    } if isinstance(tracks, list) else {}
+    playlists = state.get("playlists", []) if isinstance(state, dict) else []
+    public_playlists = []
+    for playlist in playlists if isinstance(playlists, list) else []:
+        if not isinstance(playlist, dict) or not playlist.get("public", False):
+            continue
+        ids = playlist.get("ids", [])
+        ids = ids if isinstance(ids, list) else []
+        playlist_tracks = []
+        cover = str(playlist.get("cover") or "")
+        if not cover:
+            for track_id in ids:
+                saved_track = saved_tracks_by_id.get(str(track_id))
+                if saved_track and saved_track.get("cover"):
+                    cover = str(saved_track["cover"])
+                    break
+        for track_id in ids:
+            saved_track = saved_tracks_by_id.get(str(track_id))
+            if not isinstance(saved_track, dict) or not saved_track.get("title"):
+                continue
+            artists = saved_track.get("artists", [])
+            if not isinstance(artists, list):
+                artists = []
+            playlist_tracks.append({
+                "id": str(saved_track.get("id") or track_id),
+                "title": str(saved_track.get("title") or ""),
+                "artists": artists,
+                "album": str(saved_track.get("album") or ""),
+                "cover": str(saved_track.get("cover") or ""),
+                "duration": saved_track.get("duration") or 0,
+                "releaseType": str(saved_track.get("releaseType") or ""),
+            })
+        public_playlists.append({
+            "id": str(playlist.get("id") or ""),
+            "name": str(playlist.get("name") or "Playlist"),
+            "cover": cover,
+            "tracks": playlist_tracks,
+        })
+    result["public_playlists"] = public_playlists
     return result
 
 
@@ -1416,7 +1481,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/chat/chats":
             rows = query(
                 """SELECT c.id, c.name, c.type,
-                          msg.text AS last_text, msg.created_at AS last_at,
+                          msg.text AS last_text, msg.image_data AS last_image,
+                          msg.track_json AS last_track, msg.created_at AS last_at,
                           msg.sender_id AS last_sender
                    FROM chat_members mine JOIN chats c ON c.id = mine.chat_id
                    LEFT JOIN chat_messages msg ON msg.id = (
@@ -1430,13 +1496,21 @@ class Handler(BaseHTTPRequestHandler):
                 item = dict(row)
                 if row["type"] == "direct":
                     member = one(
-                        """SELECT user_id FROM chat_members
+                        """SELECT user_id, typing_at FROM chat_members
                            WHERE chat_id = ? AND user_id != ? AND active = 1 LIMIT 1""",
                         (row["id"], user["id"]),
                     )
                     item["peer"] = _chat_user(member["user_id"]) if member else None
                     if item["peer"]:
                         item["name"] = item["peer"]["display_name"] or item["peer"]["username"]
+                        typing_at = member["typing_at"] or ""
+                        try:
+                            item["peer"]["is_typing"] = (
+                                bool(typing_at)
+                                and (now() - dt.datetime.fromisoformat(typing_at)).total_seconds() < 8
+                            )
+                        except ValueError:
+                            item["peer"]["is_typing"] = False
                 chats.append(item)
             return self._json({"chats": chats, "user": _chat_user(user["id"])})
         if path == "/api/chat/messages":
@@ -1452,16 +1526,107 @@ class Handler(BaseHTTPRequestHandler):
                 after = max(0, int(self._param("after", "0") or 0))
             except ValueError:
                 return self._fail("некорректный номер сообщения", 400)
-            rows = query(
-                """SELECT id, sender_id, text, image_data, track_json, created_at
-                   FROM chat_messages WHERE chat_id = ? AND id > ?
-                   ORDER BY id DESC LIMIT 100""",
-                (chat_id, after),
+            try:
+                around_id = max(0, int(self._param("around_id", "0") or 0))
+            except ValueError:
+                return self._fail("некорректный номер сообщения", 400)
+            term = self._param("q").strip()
+            if len(term) > 200:
+                return self._fail("поисковый запрос слишком длинный", 400)
+            day = self._param("day").strip()
+            if day:
+                try:
+                    parsed_day = dt.date.fromisoformat(day)
+                except ValueError:
+                    return self._fail("некорректная дата", 400)
+                if parsed_day.isoformat() != day:
+                    return self._fail("некорректная дата", 400)
+                if parsed_day.year < 2026:
+                    return self._fail("дата вне периода существования плеера", 400)
+            if around_id:
+                anchor = one(
+                    "SELECT id FROM chat_messages WHERE id = ? AND chat_id = ?",
+                    (around_id, chat_id),
+                )
+                if not anchor:
+                    return self._fail("сообщение не найдено", 404)
+                rows = query(
+                    """SELECT id, sender_id, text, image_data, track_json, created_at
+                       FROM chat_messages
+                       WHERE chat_id = ?
+                       ORDER BY ABS(id - ?) LIMIT 101""",
+                    (chat_id, around_id),
+                )
+                rows.sort(key=lambda row: row["id"])
+            elif day:
+                rows = query(
+                    """SELECT id, sender_id, text, image_data, track_json, created_at
+                       FROM chat_messages
+                       WHERE chat_id = ? AND substr(created_at, 1, 10) = ?
+                       ORDER BY id DESC""",
+                    (chat_id, day),
+                )
+                rows.reverse()
+            elif term:
+                candidates = query(
+                    """SELECT id, text, track_json FROM chat_messages
+                       WHERE chat_id = ? AND id > ?""",
+                    (chat_id, after),
+                )
+                needle = term.casefold()
+                matching_ids = [
+                    row["id"] for row in candidates
+                    if needle in str(row["text"] or "").casefold()
+                    or needle in str(row["track_json"] or "").casefold()
+                ]
+                rows = []
+                for offset in range(0, len(matching_ids), 500):
+                    batch = matching_ids[offset:offset + 500]
+                    placeholders = ",".join("?" for _ in batch)
+                    rows.extend(query(
+                        """SELECT id, sender_id, text, image_data, track_json, created_at
+                           FROM chat_messages
+                           WHERE chat_id = ? AND id IN (%s)""" % placeholders,
+                        (chat_id, *batch),
+                    ))
+                rows.sort(key=lambda row: row["id"], reverse=True)
+            else:
+                rows = query(
+                    """SELECT id, sender_id, text, image_data, track_json, created_at
+                       FROM chat_messages WHERE chat_id = ? AND id > ?
+                       ORDER BY id DESC LIMIT 100""",
+                    (chat_id, after),
+                )
+            if rows and not term:
+                last_incoming_id = max(
+                    row["id"] for row in rows if row["sender_id"] != user["id"]
+                ) if any(row["sender_id"] != user["id"] for row in rows) else 0
+                if last_incoming_id:
+                    execute(
+                        """UPDATE chat_members SET last_read_message_id =
+                           MAX(last_read_message_id, ?) WHERE chat_id = ? AND user_id = ?""",
+                        (last_incoming_id, chat_id, user["id"]),
+                    )
+            peer = one(
+                """SELECT user_id FROM chat_members
+                   WHERE chat_id = ? AND user_id != ? AND active = 1 LIMIT 1""",
+                (chat_id, user["id"]),
             )
+            peer_read_id = 0
+            if peer:
+                peer_read = one(
+                    """SELECT last_read_message_id FROM chat_members
+                       WHERE chat_id = ? AND user_id = ?""",
+                    (chat_id, peer["user_id"]),
+                )
+                peer_read_id = peer_read["last_read_message_id"] if peer_read else 0
             messages = []
-            for row in reversed(rows):
+            for row in rows if around_id or day else reversed(rows):
                 item = dict(row)
                 item["sender"] = _chat_user(row["sender_id"])
+                item["is_read"] = (
+                    row["sender_id"] == user["id"] and row["id"] <= peer_read_id
+                )
                 try:
                     item["track"] = json.loads(item.pop("track_json")) if item["track_json"] else None
                 except ValueError:
@@ -1469,6 +1634,27 @@ class Handler(BaseHTTPRequestHandler):
                 item["image"] = item.pop("image_data")
                 messages.append(item)
             return self._json({"messages": messages})
+        if path == "/api/chat/typing":
+            return self._fail("метод требует POST", 405)
+        if path == "/api/chat/message/delete":
+            return self._fail("метод требует POST", 405)
+        if path == "/api/chat/days":
+            chat_id = self._param("chat_id").strip()
+            member = one(
+                """SELECT m.active FROM chat_members m JOIN chats c ON c.id = m.chat_id
+                   WHERE m.chat_id = ? AND m.user_id = ? AND c.type = 'direct'""",
+                (chat_id, user["id"]),
+            )
+            if not member or not member["active"]:
+                return self._fail("нет доступа к этому чату", 403)
+            rows = query(
+                """SELECT DISTINCT substr(created_at, 1, 10) AS day
+                   FROM chat_messages
+                   WHERE chat_id = ? AND substr(created_at, 1, 10) >= '2026-01-01'
+                   ORDER BY day""",
+                (chat_id,),
+            )
+            return self._json({"days": [row["day"] for row in rows]})
         return self._fail("нет такого метода: %s" % path, 404)
 
     def chat_post(self, path: str, body: dict) -> None:
@@ -1525,6 +1711,63 @@ class Handler(BaseHTTPRequestHandler):
                  json.dumps(track, ensure_ascii=False) if track is not None else "", iso()),
             )
             return self._json({"ok": True, "id": msg_id})
+        if path == "/api/chat/typing":
+            chat_id = str(body.get("chat_id") or "").strip()
+            member = one(
+                """SELECT m.active FROM chat_members m JOIN chats c ON c.id = m.chat_id
+                   WHERE m.chat_id = ? AND m.user_id = ? AND c.type = 'direct'""",
+                (chat_id, user["id"]),
+            )
+            if not member or not member["active"]:
+                return self._fail("нет доступа к этому чату", 403)
+            typing_at = iso() if body.get("is_typing") is True else ""
+            execute(
+                "UPDATE chat_members SET typing_at = ? WHERE chat_id = ? AND user_id = ?",
+                (typing_at, chat_id, user["id"]),
+            )
+            return self._json({"ok": True})
+        if path == "/api/chat/message/delete":
+            chat_id = str(body.get("chat_id") or "").strip()
+            try:
+                message_id = int(body.get("message_id") or 0)
+            except (TypeError, ValueError):
+                return self._fail("некорректный номер сообщения", 400)
+            member = one(
+                """SELECT m.active FROM chat_members m JOIN chats c ON c.id = m.chat_id
+                   WHERE m.chat_id = ? AND m.user_id = ? AND c.type = 'direct'""",
+                (chat_id, user["id"]),
+            )
+            if not member or not member["active"]:
+                return self._fail("нет доступа к этому чату", 403)
+            message = one(
+                """SELECT id FROM chat_messages
+                   WHERE id = ? AND chat_id = ? AND sender_id = ?""",
+                (message_id, chat_id, user["id"]),
+            )
+            if not message:
+                return self._fail("сообщение не найдено или принадлежит другому пользователю", 404)
+            execute(
+                "DELETE FROM chat_messages WHERE id = ? AND chat_id = ? AND sender_id = ?",
+                (message_id, chat_id, user["id"]),
+            )
+            return self._json({"ok": True, "deleted": True})
+        if path in ("/api/chat/hide", "/api/chat/delete"):
+            chat_id = str(body.get("chat_id") or "").strip()
+            member = one(
+                """SELECT m.user_id FROM chat_members m JOIN chats c ON c.id = m.chat_id
+                   WHERE m.chat_id = ? AND m.user_id = ? AND c.type = 'direct'""",
+                (chat_id, user["id"]),
+            )
+            if not member:
+                return self._fail("чат не найден", 404)
+            if path == "/api/chat/hide":
+                execute(
+                    "UPDATE chat_members SET active = 0 WHERE chat_id = ? AND user_id = ?",
+                    (chat_id, user["id"]),
+                )
+                return self._json({"ok": True, "hidden": True})
+            execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+            return self._json({"ok": True, "deleted": True})
         return self._fail("нет такого метода: %s" % path, 404)
 
     def api_get(self, path: str) -> None:

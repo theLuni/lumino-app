@@ -16,7 +16,6 @@ import 'design.dart';
 import 'fullscreen.dart';
 import 'onboarding.dart';
 import 'pages.dart';
-import 'pages/chats.dart';
 import 'queue_panel.dart';
 
 class LuminoShell extends StatefulWidget {
@@ -213,6 +212,9 @@ class _LuminoShellState extends State<LuminoShell> with WindowListener {
     final brightness = light ? Brightness.light : Brightness.dark;
     return Theme(
       data: currentTheme.copyWith(
+        textTheme: currentTheme.textTheme.apply(fontFamily: 'SF Pro Display'),
+        primaryTextTheme:
+            currentTheme.primaryTextTheme.apply(fontFamily: 'SF Pro Display'),
         brightness: brightness,
         scaffoldBackgroundColor: light ? const Color(0xFFF4F5F8) : kBg,
         colorScheme: currentTheme.colorScheme.copyWith(
@@ -224,21 +226,28 @@ class _LuminoShellState extends State<LuminoShell> with WindowListener {
       child: ThemeScope(
         light: light,
         black: black,
-        child: PopScope<void>(
-          canPop: false,
-          onPopInvokedWithResult: (didPop, _) {
-            if (didPop) return;
-            if (state.fullScreen) {
-              state.closeFull();
-            } else if (state.queueOpen) {
-              state.toggleQueue();
-            } else if (pageHasBack(state.pageName)) {
-              state.back();
-            } else if (!_desktop) {
-              SystemNavigator.pop();
-            }
-          },
-          child: Material(type: MaterialType.transparency, child: stack),
+        openArtwork: state.settings.openArtwork,
+        child: DefaultTextStyle.merge(
+          style: const TextStyle(
+            fontFamily: 'SF Pro Display',
+            fontFamilyFallback: ['SF Pro Text'],
+          ),
+          child: PopScope<void>(
+            canPop: false,
+            onPopInvokedWithResult: (didPop, _) {
+              if (didPop) return;
+              if (state.fullScreen) {
+                state.closeFull();
+              } else if (state.queueOpen) {
+                state.toggleQueue();
+              } else if (pageHasBack(state.pageName)) {
+                state.back();
+              } else if (!_desktop) {
+                SystemNavigator.pop();
+              }
+            },
+            child: Material(type: MaterialType.transparency, child: stack),
+          ),
         ),
       ),
     );

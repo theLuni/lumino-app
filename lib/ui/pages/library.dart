@@ -616,6 +616,26 @@ class PlaylistPage extends StatelessWidget {
                             onTap: () => state
                                 .playIds(state.lists[listKey] ?? const [])),
                       const SizedBox(width: 8),
+                      Row(mainAxisSize: MainAxisSize.min, children: [
+                        if (!playlist.isPublic) ...[
+                          const LIcon('lock', size: 15),
+                          const SizedBox(width: 6),
+                        ],
+                        GhostButton(
+                          label: playlist.isPublic
+                              ? 'Make Private'
+                              : 'Make Public',
+                          onTap: () {
+                            playlist.isPublic = !playlist.isPublic;
+                            state.save();
+                            state.refresh();
+                            state.showToast(playlist.isPublic
+                                ? 'Playlist is public'
+                                : 'Playlist is private');
+                          },
+                        ),
+                      ]),
+                      const SizedBox(width: 8),
                       IconAction(
                         icon: 'close',
                         size: 36,

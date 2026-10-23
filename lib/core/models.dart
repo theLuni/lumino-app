@@ -309,6 +309,13 @@ class ReleaseIndex {
   final bool noTracks;
 }
 
+class ChatShareArg {
+  const ChatShareArg(this.track, this.nonce);
+
+  final Track track;
+  final int nonce;
+}
+
 class ArtistInfo {
   ArtistInfo({
     required this.name,
@@ -377,6 +384,7 @@ class Playlist {
     required this.ids,
     this.cover = '',
     this.created = 0,
+    this.isPublic = false,
   });
 
   final String id;
@@ -384,6 +392,7 @@ class Playlist {
   List<String> ids;
   String cover;
   int created;
+  bool isPublic;
 
   factory Playlist.fromJson(Map raw) => Playlist(
         id: asString(raw['id']),
@@ -392,6 +401,7 @@ class Playlist {
         ids: asList(raw['ids']).map((e) => e.toString()).toList(),
         cover: asString(raw['cover']),
         created: asInt(raw['created']),
+        isPublic: raw['public'] == true,
       );
 
   Map<String, dynamic> toJson() => {
@@ -400,6 +410,7 @@ class Playlist {
         'ids': ids,
         'cover': cover,
         'created': created,
+        'public': isPublic,
       };
 
   Playlist copy() => Playlist(
@@ -407,7 +418,8 @@ class Playlist {
       name: name,
       ids: List<String>.from(ids),
       cover: cover,
-      created: created);
+      created: created,
+      isPublic: isPublic);
 }
 
 class PlayEntry {
@@ -489,6 +501,7 @@ class EqSettings {
 class AppSettings {
   String theme = 'dark';
   String quality = 'normal';
+  bool openArtwork = true;
   EqSettings eq = EqSettings();
 
   AppSettings();
@@ -501,17 +514,25 @@ class AppSettings {
     if (['low', 'normal', 'high'].contains(asString(raw['quality']))) {
       settings.quality = asString(raw['quality']);
     }
+    if (raw['openArtwork'] is bool) {
+      settings.openArtwork = raw['openArtwork'] as bool;
+    }
     settings.eq = EqSettings.fromJson(asMap(raw['eq']));
     return settings;
   }
 
-  Map<String, dynamic> toJson() =>
-      {'theme': theme, 'quality': quality, 'eq': eq.toJson()};
+  Map<String, dynamic> toJson() => {
+        'theme': theme,
+        'quality': quality,
+        'openArtwork': openArtwork,
+        'eq': eq.toJson()
+      };
 
   AppSettings copy() {
     final settings = AppSettings()
       ..theme = theme
       ..quality = quality
+      ..openArtwork = openArtwork
       ..eq = eq.copy();
     return settings;
   }

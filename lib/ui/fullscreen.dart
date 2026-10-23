@@ -11,7 +11,6 @@ import '../core/models.dart';
 import '../core/utils.dart';
 import 'actions.dart';
 import 'design.dart';
-import 'pages/chats.dart';
 
 class FullscreenPlayer extends StatefulWidget {
   const FullscreenPlayer({super.key, required this.state});
@@ -768,7 +767,7 @@ class _FullProgress extends StatefulWidget {
 
 class _FullProgressState extends State<_FullProgress> {
   bool _dragging = false;
-  double _dragFraction = 0;
+  double _dragSeconds = 0;
 
   @override
   Widget build(BuildContext context) {
@@ -778,56 +777,55 @@ class _FullProgressState extends State<_FullProgress> {
         widget.state.audio.durationNotifier,
       ]),
       builder: (context, child) {
-        final duration = widget.state.duration.inMilliseconds / 1000.0;
+        final duration = widget.state.duration;
+        final maxSeconds = duration.inMilliseconds / 1000.0;
+        final sliderMax =
+            duration.inSeconds > 0 ? duration.inSeconds.toDouble() : maxSeconds;
         final position = widget.state.position.inMilliseconds / 1000.0;
-        final fraction = _dragging
-            ? _dragFraction
-            : (duration > 0 ? (position / duration).clamp(0.0, 1.0) : 0.0)
-                .toDouble();
+        final sliderValue =
+            (_dragging ? _dragSeconds : position).clamp(0.0, sliderMax);
         return Column(children: [
-          LayoutBuilder(builder: (context, constraints) {
-            void update(Offset local) {
-              final value =
-                  (local.dx / constraints.maxWidth).clamp(0.0, 1.0).toDouble();
-              setState(() {
-                _dragging = true;
-                _dragFraction = value;
-              });
-            }
-
-            return GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onPanStart: (d) => update(d.localPosition),
-              onPanUpdate: (d) => update(d.localPosition),
-              onPanEnd: (_) {
-                widget.state.seekToFraction(_dragFraction);
-                setState(() => _dragging = false);
-              },
-              onHorizontalDragCancel: () => setState(() => _dragging = false),
-              onTapUp: (d) {
-                final value = (d.localPosition.dx / constraints.maxWidth)
-                    .clamp(0.0, 1.0)
-                    .toDouble();
-                widget.state.seekToFraction(value);
-              },
-              child: SizedBox(
-                height: 18,
-                child: _SmoothProgressBar(
-                  fraction: fraction,
-                  dragging: _dragging,
-                  width: constraints.maxWidth,
-                ),
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              trackHeight: 4,
+              activeTrackColor: Colors.white,
+              inactiveTrackColor: const Color(0x1AFFFFFF),
+              thumbColor: Colors.white,
+              overlayColor: const Color(0x1AFFFFFF),
+              thumbShape: const RoundSliderThumbShape(
+                enabledThumbRadius: 6,
+                elevation: 0,
+                pressedElevation: 0,
               ),
-            );
-          }),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 16),
+            ),
+            child: Slider(
+              value: sliderValue,
+              min: 0,
+              max: sliderMax > 0 ? sliderMax : 1,
+              divisions: duration.inSeconds > 0 ? duration.inSeconds : null,
+              onChanged: sliderMax <= 0
+                  ? null
+                  : (seconds) => setState(() {
+                        _dragging = true;
+                        _dragSeconds = seconds;
+                      }),
+              onChangeEnd: sliderMax <= 0
+                  ? null
+                  : (seconds) {
+                      unawaited(widget.state.seekSeconds(seconds));
+                      setState(() => _dragging = false);
+                    },
+            ),
+          ),
           Row(children: [
-            Text(fmtDuration(_dragging ? duration * _dragFraction : position),
+            Text(fmtDuration(_dragging ? _dragSeconds : position),
                 style: const TextStyle(
                     fontSize: 12,
                     color: Color(0x80FFFFFF),
                     fontFeatures: [ui.FontFeature.tabularFigures()])),
             const Spacer(),
-            Text(fmtDuration(duration),
+            Text(fmtDuration(maxSeconds),
                 style: const TextStyle(
                     fontSize: 12,
                     color: Color(0x80FFFFFF),
@@ -837,107 +835,6 @@ class _FullProgressState extends State<_FullProgress> {
       },
     );
   }
-}
-
-class _SmoothProgressBar extends StatefulWidget {
-  const _SmoothProgressBar({
-    required this.fraction,
-    required this.dragging,
-    required this.width,
-  });
-
-  final double fraction;
-  final bool dragging;
-  final double width;
-
-  @override
-  State<_SmoothProgressBar> createState() => _SmoothProgressBarState();
-}
-
-class _SmoothProgressBarState extends State<_SmoothProgressBar>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  late Animation<double> _fraction;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 160),
-      value: 1,
-    );
-    _fraction = AlwaysStoppedAnimation(widget.fraction);
-  }
-
-  @override
-  void didUpdateWidget(covariant _SmoothProgressBar oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.dragging) {
-      _controller.stop();
-      _fraction = AlwaysStoppedAnimation(widget.fraction);
-    } else if (widget.fraction != oldWidget.fraction) {
-      final begin = _fraction.value;
-      _controller.stop();
-      _fraction = Tween<double>(begin: begin, end: widget.fraction)
-          .chain(CurveTween(curve: Curves.easeOutCubic))
-          .animate(_controller);
-      unawaited(_controller.forward(from: 0));
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) => CustomPaint(
-        painter: _ProgressPainter(
-          fraction: _fraction.value,
-          hover: widget.dragging,
-        ),
-        size: Size(widget.width, 18),
-      ),
-    );
-  }
-}
-
-class _ProgressPainter extends CustomPainter {
-  const _ProgressPainter({required this.fraction, this.hover = false});
-  final double fraction;
-  final bool hover;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cy = size.height / 2;
-    final track = Paint()
-      ..color = const Color(0x1AFFFFFF)
-      ..strokeWidth = 4
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(Offset(0, cy), Offset(size.width, cy), track);
-    final filled = size.width * fraction;
-    final played = Paint()
-      ..color = hover ? Colors.white : const Color(0xE6FFFFFF)
-      ..strokeWidth = 4
-      ..strokeCap = StrokeCap.round;
-    if (filled > 0.5) {
-      canvas.drawLine(Offset(0, cy), Offset(filled, cy), played);
-    }
-    canvas.drawCircle(
-      Offset(filled, cy),
-      hover ? 6 : 5,
-      Paint()..color = Colors.white,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _ProgressPainter oldDelegate) =>
-      oldDelegate.fraction != fraction || oldDelegate.hover != hover;
 }
 
 class _Pill extends StatefulWidget {
