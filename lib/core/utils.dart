@@ -55,6 +55,9 @@ const Map<String, String> displayNames = {
 
 String displayName(String name) => displayNames[looseKey(name)] ?? name;
 
+bool isPermittedPlaylistName(String name) =>
+    !compactKey(name).contains('goida');
+
 bool sameArtist(String? a, String? b) {
   final x = looseKey(a);
   final y = looseKey(b);

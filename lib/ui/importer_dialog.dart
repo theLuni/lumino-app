@@ -175,6 +175,10 @@ class _ImporterDialogState extends State<_ImporterDialog> {
       widget.state.registerTrack(track);
     }
     for (final entry in _addedByList.entries) {
+      if (!isPermittedPlaylistName(entry.key)) {
+        widget.state.showToast('This name is not permitted.');
+        continue;
+      }
       final existing = widget.state.playlists
           .where((p) => norm(p.name) == norm(entry.key))
           .firstOrNull;

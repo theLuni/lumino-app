@@ -32,7 +32,10 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
   DateTime _userScrollUntil = DateTime.fromMillisecondsSinceEpoch(0);
   bool _showLikeBurst = false;
   bool _showLikeDim = false;
+  bool _addingToPlaylist = false;
+  bool _playlistAdded = false;
   Timer? _likeBurstTimer;
+  Timer? _playlistAddedTimer;
 
   @override
   void didUpdateWidget(covariant FullscreenPlayer oldWidget) {
@@ -51,6 +54,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
   void dispose() {
     widget.state.audio.positionNotifier.removeListener(_tick);
     _likeBurstTimer?.cancel();
+    _playlistAddedTimer?.cancel();
     _scroll.dispose();
     super.dispose();
   }
@@ -68,6 +72,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
     _active = -1;
     _showLikeBurst = false;
     _showLikeDim = false;
+    _playlistAdded = false;
     _lineKeys.clear();
     _load(track);
   }
@@ -165,7 +170,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
       }
       Scrollable.ensureVisible(
         built,
-        alignment: 0.78,
+        alignment: 0.5,
         duration: const Duration(milliseconds: 520),
         curve: Curves.easeOutCubic,
       );
@@ -173,7 +178,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
     }
     final position = _scroll.position;
     final target =
-        math.max(0.0, index * _lineHeight - position.viewportDimension * 0.78);
+        math.max(0.0, index * _lineHeight - position.viewportDimension * 0.5);
     _scroll
         .animateTo(
       math.min(target, position.maxScrollExtent),
@@ -185,7 +190,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
       final ctx = _lineKeys[index]?.currentContext;
       if (ctx != null) {
         Scrollable.ensureVisible(ctx,
-            alignment: 0.38,
+            alignment: 0.5,
             duration: const Duration(milliseconds: 200),
             curve: Curves.easeOut);
       }
@@ -262,33 +267,90 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
   }
 
   Widget _background(Track track) {
+    final artwork = Opacity(
+      opacity: 0.9,
+      child: Transform.scale(
+        scale: 1.12,
+        child: imageWidget(track.cover, cacheWidth: 1800),
+      ),
+    );
+    final showArtwork = widget.state.settings.showFullscreenArtwork;
+    final background = !showArtwork && track.cover.isNotEmpty
+        ? FutureBuilder<int?>(
+            future: widget.state.colorFor(track.cover),
+            builder: (context, snapshot) {
+              final dominant = snapshot.data == null
+                  ? coverGradient(track.cover).first
+                  : Color(snapshot.data!);
+              final glow = Color.lerp(dominant, Colors.black, 0.78)!;
+              final secondary = Color.lerp(dominant, Colors.white, 0.12)!
+                  .withValues(alpha: 0.12);
+              return Stack(fit: StackFit.expand, children: [
+                const ColoredBox(color: Color(0xFF030304)),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: RadialGradient(
+                      center: const Alignment(-0.72, -0.78),
+                      radius: 1.2,
+                      colors: [
+                        glow.withValues(alpha: 0.48),
+                        Colors.transparent
+                      ],
+                      stops: const [0, 1],
+                    ),
+                  ),
+                ),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: RadialGradient(
+                      center: const Alignment(0.84, 0.72),
+                      radius: 0.95,
+                      colors: [secondary, Colors.transparent],
+                      stops: const [0, 1],
+                    ),
+                  ),
+                ),
+                const DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Color(0x66000000),
+                        Color(0x40000000),
+                        Color(0xAA000000),
+                      ],
+                    ),
+                  ),
+                ),
+              ]);
+            },
+          )
+        : const ColoredBox(color: Color(0xFF08080A));
     return RepaintBoundary(
         child: Stack(fit: StackFit.expand, children: [
-      ColoredBox(color: const Color(0xFF08080A)),
-      if (track.cover.isNotEmpty)
-        ImageFiltered(
-          imageFilter: ui.ImageFilter.blur(sigmaX: 22, sigmaY: 22),
-          child: Opacity(
-            opacity: 0.9,
-            child: Transform.scale(
-              scale: 1.12,
-              child: imageWidget(track.cover, cacheWidth: 1800),
+      background,
+      if (showArtwork && track.cover.isNotEmpty)
+        widget.state.settings.blurFullscreenArtwork
+            ? ImageFiltered(
+                imageFilter: ui.ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+                child: artwork,
+              )
+            : artwork,
+      if (showArtwork)
+        const DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0x7008080A),
+                Color(0x50101014),
+                Color(0x99050506),
+              ],
             ),
           ),
         ),
-      DecoratedBox(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              const Color(0x7008080A),
-              const Color(0x50101014),
-              const Color(0x99050506),
-            ],
-          ),
-        ),
-      ),
     ]));
   }
 
@@ -346,6 +408,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
                 CoverArt(
                   track: track,
                   radius: 14,
+                  cacheWidth: 2400,
                   onTap: () => openTrackRelease(state, track),
                 ),
                 AnimatedOpacity(
@@ -422,6 +485,55 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
                     onTap: () => shareTrackInChat(context, state, track),
                   ),
                 ),
+                Positioned(
+                  right: 44,
+                  bottom: 8,
+                  child: SizedBox(
+                    width: 30,
+                    height: 30,
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 220),
+                      switchInCurve: Curves.easeOutBack,
+                      switchOutCurve: Curves.easeIn,
+                      transitionBuilder: (child, animation) => ScaleTransition(
+                        scale: animation,
+                        child: FadeTransition(opacity: animation, child: child),
+                      ),
+                      child: IconAction(
+                        key: ValueKey(_playlistAdded),
+                        icon: _playlistAdded ? 'check' : 'plus',
+                        size: 30,
+                        iconSize: 15,
+                        tooltip: _playlistAdded
+                            ? 'Added to Playlist'
+                            : 'Add to Playlist',
+                        onTap: _addingToPlaylist
+                            ? null
+                            : () async {
+                                setState(() => _addingToPlaylist = true);
+                                var added = false;
+                                try {
+                                  added = await showPlaylistPicker(
+                                      context, state, track);
+                                } finally {
+                                  if (mounted) {
+                                    setState(() => _addingToPlaylist = false);
+                                  }
+                                }
+                                if (!mounted || !added) return;
+                                _playlistAddedTimer?.cancel();
+                                setState(() => _playlistAdded = true);
+                                _playlistAddedTimer = Timer(
+                                    const Duration(milliseconds: 1500), () {
+                                  if (mounted) {
+                                    setState(() => _playlistAdded = false);
+                                  }
+                                });
+                              },
+                      ),
+                    ),
+                  ),
+                ),
               ]),
             ),
           );
@@ -432,15 +544,26 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
           child: Center(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Text(
-                track.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    fontSize: 23,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.6),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      track.title,
+                      maxLines: 1,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          fontSize: 23,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.6),
+                    ),
+                    if (track.explicit) ...[
+                      const SizedBox(width: 8),
+                      const ExplicitBadge(),
+                    ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -803,7 +926,6 @@ class _FullProgressState extends State<_FullProgress> {
               value: sliderValue,
               min: 0,
               max: sliderMax > 0 ? sliderMax : 1,
-              divisions: duration.inSeconds > 0 ? duration.inSeconds : null,
               onChanged: sliderMax <= 0
                   ? null
                   : (seconds) => setState(() {

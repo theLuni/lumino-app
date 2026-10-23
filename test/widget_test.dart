@@ -64,10 +64,17 @@ void main() {
 
   group('AppSettings', () {
     test('persists the artwork preview preference', () {
-      final settings = AppSettings()..openArtwork = false;
+      final settings = AppSettings()
+        ..openArtwork = false
+        ..blurFullscreenArtwork = false
+        ..showFullscreenArtwork = false;
       final restored = AppSettings.fromJson(settings.toJson());
       expect(restored.openArtwork, isFalse);
+      expect(restored.blurFullscreenArtwork, isFalse);
+      expect(restored.showFullscreenArtwork, isFalse);
       expect(AppSettings.fromJson({}).openArtwork, isTrue);
+      expect(AppSettings.fromJson({}).blurFullscreenArtwork, isTrue);
+      expect(AppSettings.fromJson({}).showFullscreenArtwork, isTrue);
     });
   });
 
@@ -84,6 +91,15 @@ void main() {
       );
       expect(restored.isPublic, isTrue);
       expect(restored.copy().isPublic, isTrue);
+    });
+  });
+
+  group('Playlist names', () {
+    test('rejects forbidden names case-insensitively', () {
+      expect(isPermittedPlaylistName('GOIDA'), isFalse);
+      expect(isPermittedPlaylistName('mix GoIdA edition'), isFalse);
+      expect(isPermittedPlaylistName('go-id-a'), isFalse);
+      expect(isPermittedPlaylistName('Daily Mix'), isTrue);
     });
   });
 

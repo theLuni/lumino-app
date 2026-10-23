@@ -87,23 +87,29 @@ Future<void> openTrackMenu(
   await showLuminoMenu(context, position, items);
 }
 
-Future<void> showPlaylistPicker(
+Future<bool> showPlaylistPicker(
     BuildContext context, AppState state, Track track) async {
   if (state.playlists.length == 1) {
     final playlist = state.playlists.single;
+    final added = !playlist.ids.contains(track.id);
     state.addTrackToPlaylist(playlist, track.id);
-    return;
+    return added;
   }
   if (state.playlists.isEmpty) {
     final name = await showTextPrompt(context,
         title: 'New playlist', placeholder: 'My playlist');
-    if (name == null) return;
+    if (name == null) return false;
+    if (!isPermittedPlaylistName(name)) {
+      state.showToast('This name is not permitted.');
+      return false;
+    }
     state.createPlaylist(name, firstId: track.id);
     state.showToast('Added to $name');
-    return;
+    return true;
   }
-  if (!context.mounted) return;
-  await showGlassDialog<void>(
+  if (!context.mounted) return false;
+  var createdPlaylist = false;
+  final added = await showGlassDialog<bool>(
     context,
     width: 380,
     builder: (dialogContext) => Column(
@@ -128,9 +134,9 @@ Future<void> showPlaylistPicker(
                   HoverBuilder(
                     builder: (context, hovered) => GestureDetector(
                       onTap: () {
+                        final added = !playlist.ids.contains(track.id);
                         state.addTrackToPlaylist(playlist, track.id);
-                        Navigator.of(dialogContext).pop();
-                        state.showToast('Added to ${playlist.name}');
+                        Navigator.of(dialogContext).pop(added);
                       },
                       child: Container(
                         height: 46,
@@ -175,8 +181,13 @@ Future<void> showPlaylistPicker(
             final name = await showTextPrompt(context,
                 title: 'New playlist', placeholder: 'My playlist');
             if (name == null) return;
+            if (!isPermittedPlaylistName(name)) {
+              state.showToast('This name is not permitted.');
+              return;
+            }
             state.createPlaylist(name, firstId: track.id);
             state.showToast('Added to $name');
+            createdPlaylist = true;
           },
           child: Container(
             height: 46,
@@ -192,12 +203,17 @@ Future<void> showPlaylistPicker(
       ],
     ),
   );
+  return added ?? createdPlaylist;
 }
 
 Future<void> createPlaylistFlow(BuildContext context, AppState state) async {
   final name = await showTextPrompt(context,
       title: 'New playlist', placeholder: 'My playlist');
   if (name == null) return;
+  if (!isPermittedPlaylistName(name)) {
+    state.showToast('This name is not permitted.');
+    return;
+  }
   state.createPlaylist(name);
   state.showToast('Playlist created');
 }
@@ -211,6 +227,10 @@ Future<void> renamePlaylistFlow(
     okLabel: 'Save',
   );
   if (name == null) return;
+  if (!isPermittedPlaylistName(name)) {
+    state.showToast('This name is not permitted.');
+    return;
+  }
   playlist.name = name;
   state.save();
   state.refresh();

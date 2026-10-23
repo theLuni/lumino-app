@@ -29,7 +29,7 @@ class ChatsPage extends StatefulWidget {
   State<ChatsPage> createState() => _ChatsPageState();
 }
 
-class _ChatsPageState extends State<ChatsPage> {
+class _ChatsPageState extends State<ChatsPage> with WidgetsBindingObserver {
   final TextEditingController _composer = TextEditingController();
   final FocusNode _composerFocus = FocusNode();
   final TextEditingController _messageSearch = TextEditingController();
@@ -53,16 +53,41 @@ class _ChatsPageState extends State<ChatsPage> {
   Timer? _typingHeartbeat;
   String? _typingChatId;
   bool _typingActive = false;
+  bool _appResumed = true;
+  bool _wasPageActive = false;
+
+  bool get _isPageActive =>
+      mounted && widget.state.pageName == 'chats' && _appResumed;
 
   @override
   void initState() {
     super.initState();
     _scroll.addListener(_handleScroll);
     _messageSearch.addListener(_onSearchChanged);
-    unawaited(_refresh());
-    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) {
-      unawaited(_refresh(silent: true));
+    WidgetsBinding.instance.addObserver(this);
+    widget.state.addListener(_handleStateChanged);
+    _appResumed = WidgetsBinding.instance.lifecycleState !=
+            AppLifecycleState.paused &&
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.inactive &&
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.detached;
+    _wasPageActive = _isPageActive;
+    if (_isPageActive) unawaited(_refresh());
+    _pollTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (_isPageActive) unawaited(_refresh(silent: true));
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _appResumed = state == AppLifecycleState.resumed;
+    _handleStateChanged();
+  }
+
+  void _handleStateChanged() {
+    if (mounted) setState(() {});
+    final active = _isPageActive;
+    if (active && !_wasPageActive) unawaited(_refresh(silent: true));
+    _wasPageActive = active;
   }
 
   @override
@@ -79,6 +104,8 @@ class _ChatsPageState extends State<ChatsPage> {
   @override
   void dispose() {
     _pollTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    widget.state.removeListener(_handleStateChanged);
     _searchDebounce?.cancel();
     _typingHeartbeat?.cancel();
     if (_typingActive && _typingChatId != null) {
@@ -133,12 +160,13 @@ class _ChatsPageState extends State<ChatsPage> {
         _me = user;
         if (!selectedExists) {
           _selectedChat = chats.isEmpty ? null : chats.first['id'] as String?;
+          _stickToBottom = true;
         }
         _loading = false;
       });
       if (selectedChatChanged) await _loadMessageDays();
-      await _loadMessages();
-      await _loadSearchResults();
+      await _loadMessages(silent: silent);
+      if (_searchOpen) await _loadSearchResults();
       final share = widget.sharedTrack;
       if (share != null &&
           share.nonce != _promptedShareNonce &&
@@ -153,7 +181,7 @@ class _ChatsPageState extends State<ChatsPage> {
     }
   }
 
-  Future<void> _loadMessages() async {
+  Future<void> _loadMessages({bool silent = false}) async {
     final chatId = _selectedChat;
     if (chatId == null) {
       if (mounted && _messages.isNotEmpty) setState(() => _messages = []);
@@ -177,7 +205,7 @@ class _ChatsPageState extends State<ChatsPage> {
         }
       }
     } catch (error) {
-      if (mounted) {
+      if (mounted && !silent) {
         widget.state.showToast('Не удалось загрузить сообщения: $error');
       }
     }
@@ -384,8 +412,10 @@ class _ChatsPageState extends State<ChatsPage> {
   Widget _chatActions(Map<String, dynamic> chat) => Builder(
         builder: (buttonContext) => IconAction(
           icon: 'kebab',
-          size: 34,
-          iconSize: 16,
+          size: 36,
+          iconSize: 18,
+          active: true,
+          color: const Color(0xFFE6E6E6),
           tooltip: 'Chat options',
           onTap: () {
             final box = buttonContext.findRenderObject() as RenderBox?;
@@ -429,6 +459,18 @@ class _ChatsPageState extends State<ChatsPage> {
     final items = <Widget>[];
     String? previousDay;
     for (final message in _messages) {
+      final rawTrack = message['track'];
+      if (rawTrack is Map) {
+        final trackData = rawTrack.map(
+          (key, value) => MapEntry(key.toString(), value),
+        );
+        final track = widget.state.registerTrack(Track.fromJson(trackData));
+        if (track.cover.isEmpty) {
+          widget.state.ensureCovers([track], priority: true);
+        } else if (trackData['cover'] != track.cover) {
+          message['track'] = {...trackData, 'cover': track.cover};
+        }
+      }
       final rawDate = DateTime.tryParse(
         (message['created_at'] ?? '').toString(),
       )?.toLocal();
@@ -918,7 +960,11 @@ class _ChatsPageState extends State<ChatsPage> {
           child: Padding(
             padding: const EdgeInsets.fromLTRB(9, 9, 5, 9),
             child: Row(children: [
-              _chatAvatar(chat, radius: 18),
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {},
+                child: _chatAvatar(chat, radius: 18),
+              ),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -1173,9 +1219,9 @@ class _ChatsPageState extends State<ChatsPage> {
                                 onPressed: _chooseMessageDay,
                               ),
                               IconButton(
-                                tooltip: 'Clear search',
+                                tooltip: 'Close search',
                                 icon: const LIcon('close', size: 16),
-                                onPressed: _messageSearch.clear,
+                                onPressed: _toggleSearch,
                               ),
                             ],
                           ),
@@ -1238,12 +1284,27 @@ class _ChatsPageState extends State<ChatsPage> {
                                         opacity: _showScrollToLatest ? 1 : 0,
                                         duration:
                                             const Duration(milliseconds: 160),
-                                        child: IconAction(
-                                          icon: 'chevD',
-                                          size: 42,
-                                          iconSize: 18,
-                                          tooltip: 'Jump to latest',
-                                          onTap: _scrollToBottom,
+                                        child: Container(
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xF20D0E12),
+                                            borderRadius:
+                                                BorderRadius.circular(12),
+                                            border: Border.all(
+                                                color: const Color(0x26FFFFFF)),
+                                            boxShadow: const [
+                                              BoxShadow(
+                                                  color: Color(0x50000000),
+                                                  blurRadius: 14,
+                                                  offset: Offset(0, 5)),
+                                            ],
+                                          ),
+                                          child: IconAction(
+                                            icon: 'chevD',
+                                            size: 42,
+                                            iconSize: 18,
+                                            tooltip: 'Jump to latest',
+                                            onTap: _scrollToBottom,
+                                          ),
                                         ),
                                       ),
                                     ),
@@ -1790,9 +1851,7 @@ class _MessageBubble extends StatelessWidget {
                             LIcon(
                               'check',
                               size: 12,
-                              color: isRead
-                                  ? const Color(0xFF66D991)
-                                  : const Color(0x99FFFFFF),
+                              color: Colors.white,
                             ),
                             if (isRead)
                               Transform.translate(
@@ -1800,7 +1859,7 @@ class _MessageBubble extends StatelessWidget {
                                 child: const LIcon(
                                   'check',
                                   size: 12,
-                                  color: Color(0xFF66D991),
+                                  color: Colors.white,
                                 ),
                               ),
                           ],

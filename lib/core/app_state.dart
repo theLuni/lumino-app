@@ -228,6 +228,7 @@ class AppState extends ChangeNotifier {
         .where((p) => asString(p['id']).isNotEmpty && p['ids'] is List)
         .map(Playlist.fromJson)
         .toList();
+    final playlistTrackIds = playlists.expand((p) => p.ids).toSet();
 
     final restoredTracks = asList(saved['savedTracks']);
     if (saved['profile'] is Map) {
@@ -261,9 +262,13 @@ class AppState extends ChangeNotifier {
 
     for (final raw in restoredTracks) {
       final track = Track.fromJson(asMap(raw));
-      if ((track.source == 'catalog' || track.source == 'hitmoz') &&
-          track.playable) {
-        track.source = 'catalog';
+      final playableSavedTrack =
+          (track.source == 'catalog' || track.source == 'hitmoz') &&
+              track.playable;
+      if (playlistTrackIds.contains(track.id) || playableSavedTrack) {
+        if (playableSavedTrack) {
+          track.source = 'catalog';
+        }
         byId.putIfAbsent(track.id, () => track);
       }
     }
@@ -362,10 +367,9 @@ class AppState extends ChangeNotifier {
       'playlists': playlists.map((p) => p.toJson()).toList(),
       'savedTracks': byId.values
           .where((t) =>
-              t.source == 'catalog' &&
-              (savedTrackIds.contains(t.id) ||
-                  liked.contains(t.key) ||
-                  inPlaylist.contains(t.id)))
+              inPlaylist.contains(t.id) ||
+              (t.source == 'catalog' &&
+                  (savedTrackIds.contains(t.id) || liked.contains(t.key))))
           .map((t) => t.toJson())
           .toList(),
       'profile': profile.toJson(),
@@ -640,6 +644,7 @@ class AppState extends ChangeNotifier {
       }
     }
     final registered = registerTrack(track);
+    ensureCovers([registered], priority: true);
     await playIds([registered.id]);
   }
 
@@ -959,8 +964,8 @@ class AppState extends ChangeNotifier {
   }
 
   void _pumpCovers() {
-    while (_coverBusy < 2 && _coverWaiting.isNotEmpty) {
-      final take = math.min(8, _coverWaiting.length);
+    while (_coverBusy < 1 && _coverWaiting.isNotEmpty) {
+      final take = math.min(3, _coverWaiting.length);
       final chunk = _coverWaiting.sublist(0, take);
       _coverWaiting.removeRange(0, take);
       _coverBusy++;
@@ -1035,6 +1040,13 @@ class AppState extends ChangeNotifier {
         url = await meta.getAvatar(name);
       } catch (_) {
         url = '';
+      }
+      if (url.isEmpty) {
+        try {
+          url = (await artistInfo(name)).avatar;
+        } catch (_) {
+          url = '';
+        }
       }
       if (url.isEmpty) {
         Timer(const Duration(milliseconds: 50000),
@@ -1793,6 +1805,18 @@ class AppState extends ChangeNotifier {
 
   void setArtworkOpen(bool enabled) {
     settings.openArtwork = enabled;
+    save();
+    notifyListeners();
+  }
+
+  void setFullscreenArtworkBlur(bool enabled) {
+    settings.blurFullscreenArtwork = enabled;
+    save();
+    notifyListeners();
+  }
+
+  void setFullscreenArtworkVisible(bool enabled) {
+    settings.showFullscreenArtwork = enabled;
     save();
     notifyListeners();
   }

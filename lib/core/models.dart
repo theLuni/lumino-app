@@ -502,6 +502,8 @@ class AppSettings {
   String theme = 'dark';
   String quality = 'normal';
   bool openArtwork = true;
+  bool blurFullscreenArtwork = true;
+  bool showFullscreenArtwork = true;
   EqSettings eq = EqSettings();
 
   AppSettings();
@@ -517,6 +519,12 @@ class AppSettings {
     if (raw['openArtwork'] is bool) {
       settings.openArtwork = raw['openArtwork'] as bool;
     }
+    if (raw['blurFullscreenArtwork'] is bool) {
+      settings.blurFullscreenArtwork = raw['blurFullscreenArtwork'] as bool;
+    }
+    if (raw['showFullscreenArtwork'] is bool) {
+      settings.showFullscreenArtwork = raw['showFullscreenArtwork'] as bool;
+    }
     settings.eq = EqSettings.fromJson(asMap(raw['eq']));
     return settings;
   }
@@ -525,6 +533,8 @@ class AppSettings {
         'theme': theme,
         'quality': quality,
         'openArtwork': openArtwork,
+        'blurFullscreenArtwork': blurFullscreenArtwork,
+        'showFullscreenArtwork': showFullscreenArtwork,
         'eq': eq.toJson()
       };
 
@@ -533,6 +543,8 @@ class AppSettings {
       ..theme = theme
       ..quality = quality
       ..openArtwork = openArtwork
+      ..blurFullscreenArtwork = blurFullscreenArtwork
+      ..showFullscreenArtwork = showFullscreenArtwork
       ..eq = eq.copy();
     return settings;
   }

@@ -184,11 +184,14 @@ class _PlaylistTileState extends State<_PlaylistTile> {
   @override
   Widget build(BuildContext context) {
     final playlist = widget.playlist;
+    final tracks = playlist.ids
+        .map((id) => widget.state.byId[id])
+        .whereType<Track>()
+        .toList();
     final cover = playlist.cover.isNotEmpty
         ? playlist.cover
-        : (playlist.ids
-            .map((id) => widget.state.byId[id]?.cover)
-            .whereType<String>()
+        : (tracks
+            .map((track) => track.cover)
             .firstWhere((c) => c.isNotEmpty, orElse: () => ''));
     return HoverBuilder(
       builder: (context, hovered) => GestureDetector(
@@ -225,8 +228,7 @@ class _PlaylistTileState extends State<_PlaylistTile> {
               style:
                   const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
           const SizedBox(height: 2),
-          Text(
-              '${playlist.ids.length} ${plural(playlist.ids.length, 'track', 'tracks')}',
+          Text('${tracks.length} ${plural(tracks.length, 'track', 'tracks')}',
               style: TextStyle(
                   fontSize: 12.5,
                   color: ThemeScope.of(context).mutedForeground)),
@@ -471,10 +473,12 @@ class LikedPage extends StatelessWidget {
 class _PlaylistNameEditor extends StatefulWidget {
   const _PlaylistNameEditor({
     super.key,
+    required this.state,
     required this.playlist,
     required this.onChanged,
   });
 
+  final AppState state;
   final Playlist playlist;
   final VoidCallback onChanged;
 
@@ -503,6 +507,14 @@ class _PlaylistNameEditorState extends State<_PlaylistNameEditor> {
       );
       return;
     }
+    if (!isPermittedPlaylistName(name)) {
+      widget.state.showToast('This name is not permitted.');
+      _controller.value = TextEditingValue(
+        text: widget.playlist.name,
+        selection: TextSelection.collapsed(offset: widget.playlist.name.length),
+      );
+      return;
+    }
     widget.playlist.name = name;
     _saveTimer?.cancel();
     _saveTimer = Timer(const Duration(milliseconds: 350), widget.onChanged);
@@ -513,6 +525,16 @@ class _PlaylistNameEditorState extends State<_PlaylistNameEditor> {
     return TextField(
       controller: _controller,
       onChanged: (value) {
+        if (!isPermittedPlaylistName(value)) {
+          _saveTimer?.cancel();
+          widget.state.showToast('This name is not permitted.');
+          _controller.value = TextEditingValue(
+            text: widget.playlist.name,
+            selection:
+                TextSelection.collapsed(offset: widget.playlist.name.length),
+          );
+          return;
+        }
         widget.playlist.name = value;
         _saveTimer?.cancel();
         _saveTimer = Timer(
@@ -543,6 +565,20 @@ class PlaylistPage extends StatelessWidget {
   final AppState state;
   final String playlistId;
 
+  Future<void> _pickCover(BuildContext context, Playlist playlist) async {
+    try {
+      final dataUrl = await pickImageAsDataUrl(size: 640, quality: 90);
+      if (dataUrl.isEmpty || !context.mounted) return;
+      playlist.cover = dataUrl;
+      state.save();
+      state.refresh();
+    } catch (error) {
+      if (context.mounted) {
+        state.showToast('Could not set playlist cover: $error');
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final playlist =
@@ -572,13 +608,31 @@ class PlaylistPage extends StatelessWidget {
                 height: 200,
                 child: CoverArt(
                   url: cover,
-                  onTap: () => showArtwork(context, cover, playlist.name),
+                  onTap: () => _pickCover(context, playlist),
                   seed: playlist.name,
                   letter: playlist.name.isEmpty
                       ? '?'
                       : playlist.name.characters.first.toUpperCase(),
                   square: true,
                   radius: 16,
+                  child: playlist.cover.isNotEmpty
+                      ? Positioned(
+                          top: 8,
+                          right: 8,
+                          child: IconAction(
+                            icon: 'close',
+                            size: 28,
+                            iconSize: 12,
+                            color: Colors.white,
+                            tooltip: 'Remove cover',
+                            onTap: () {
+                              playlist.cover = '';
+                              state.save();
+                              state.refresh();
+                            },
+                          ),
+                        )
+                      : null,
                 ),
               ),
             ),
@@ -596,6 +650,7 @@ class PlaylistPage extends StatelessWidget {
                     const SizedBox(height: 8),
                     _PlaylistNameEditor(
                       key: ValueKey('playlist-name-${playlist.id}'),
+                      state: state,
                       playlist: playlist,
                       onChanged: () {
                         state.save();
@@ -616,25 +671,20 @@ class PlaylistPage extends StatelessWidget {
                             onTap: () => state
                                 .playIds(state.lists[listKey] ?? const [])),
                       const SizedBox(width: 8),
-                      Row(mainAxisSize: MainAxisSize.min, children: [
-                        if (!playlist.isPublic) ...[
-                          const LIcon('lock', size: 15),
-                          const SizedBox(width: 6),
-                        ],
-                        GhostButton(
-                          label: playlist.isPublic
-                              ? 'Make Private'
-                              : 'Make Public',
-                          onTap: () {
-                            playlist.isPublic = !playlist.isPublic;
-                            state.save();
-                            state.refresh();
-                            state.showToast(playlist.isPublic
-                                ? 'Playlist is public'
-                                : 'Playlist is private');
-                          },
-                        ),
-                      ]),
+                      ChipButton(
+                        label:
+                            playlist.isPublic ? 'Make Private' : 'Make Public',
+                        icon: playlist.isPublic ? 'lock' : 'eye',
+                        ghost: true,
+                        onTap: () {
+                          playlist.isPublic = !playlist.isPublic;
+                          state.save();
+                          state.refresh();
+                          state.showToast(playlist.isPublic
+                              ? 'Playlist is public'
+                              : 'Playlist is private');
+                        },
+                      ),
                       const SizedBox(width: 8),
                       IconAction(
                         icon: 'close',
@@ -644,16 +694,6 @@ class PlaylistPage extends StatelessWidget {
                         onTap: () =>
                             deletePlaylistFlow(context, state, playlist),
                       ),
-                      if (playlist.cover.isNotEmpty) ...[
-                        const SizedBox(width: 8),
-                        GhostButton(
-                            label: 'Remove cover',
-                            onTap: () {
-                              playlist.cover = '';
-                              state.save();
-                              state.refresh();
-                            }),
-                      ],
                     ]),
                   ]),
             ),

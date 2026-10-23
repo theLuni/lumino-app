@@ -139,6 +139,10 @@ const Map<String, String> kIconPaths = {
       'M3.5 7.5a2 2 0 0 1 2-2h3.8l2 2.2h7.2a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z M12 10.8v5 M9.5 13.3h5',
   'share':
       'M13 5.5 20 12l-7 6.5v-3.8c-4.2 0-6.7 1.4-8.5 4.3.5-4.6 3.2-8.3 8.5-8.8z',
+  'sun':
+      'M12 4.5a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15z M12 1.5v1.7 M12 20.8v1.7 M4.57 4.57l1.2 1.2 M18.23 18.23l1.2 1.2 M1.5 12h1.7 M20.8 12h1.7 M4.57 19.43l1.2-1.2 M18.23 5.77l1.2-1.2',
+  'sunrise':
+      'M3 18.5h18 M5 16a7 7 0 0 1 14 0 M12 2v5 M4.9 7l3.2 3.2 M19.1 7l-3.2 3.2 M2 11h4 M18 11h4',
   'chevL': 'M15 5l-7 7 7 7',
   'chevR': 'M9 5l7 7-7 7',
   'chevD': 'M5 9l7 7 7-7',
@@ -151,8 +155,7 @@ const Map<String, String> kIconPaths = {
   'restore':
       'M5 8.5h8.5a2 2 0 0 1 2 2V19a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z M9 8.5V7a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-1.5',
   'close': 'M6 6l12 12 M18 6 6 18',
-  'trash':
-      'M4 7h16 M10 11v6 M14 11v6 M6 7l1 14h10l1-14 M9 7V4h6v3',
+  'trash': 'M4 7h16 M10 11v6 M14 11v6 M6 7l1 14h10l1-14 M9 7V4h6v3',
   'clock': 'M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0z M12 7.5V12l3 2',
   'calendar':
       'M7 3v3 M17 3v3 M4 6h16v15H4z M4 10h16 M8 14h1 M12 14h1 M16 14h1 M8 18h1 M12 18h1',
@@ -177,6 +180,8 @@ const Map<String, String> kIconPaths = {
       'M2.5 12S6.7 6 12 6s9.5 6 9.5 6-4.2 6-9.5 6S2.5 12 2.5 12z M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
   'eyeOff':
       'M2.5 12S6.7 6 12 6s9.5 6 9.5 6-4.2 6-9.5 6S2.5 12 2.5 12z M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M4 4l16 16',
+  'imageOff':
+      'M3.5 5.5h17v13h-17z M3.5 15l4.5-4.5 3.5 3.5 2-2 7 6.5 M8 8h.01 M4 4l16 16',
 };
 
 const Set<String> _filledIcons = {
@@ -751,6 +756,7 @@ class CoverArt extends StatelessWidget {
     this.alignment = Alignment.center,
     this.child,
     this.openArtwork = true,
+    this.cacheWidth,
   });
 
   final Track? track;
@@ -764,6 +770,7 @@ class CoverArt extends StatelessWidget {
   final Alignment alignment;
   final Widget? child;
   final bool openArtwork;
+  final int? cacheWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -784,7 +791,7 @@ class CoverArt extends StatelessWidget {
               : math.max(1200, (displaySize * 3).ceil());
       content = OriginalColors(
           child: imageWidget(source,
-              alignment: alignment, cacheWidth: decodeWidth));
+              alignment: alignment, cacheWidth: cacheWidth ?? decodeWidth));
     } else {
       content = DecoratedBox(
         decoration: BoxDecoration(

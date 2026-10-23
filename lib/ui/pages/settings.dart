@@ -119,14 +119,42 @@ class _SettingsPageState extends State<SettingsPage> {
               Reveal(
                   index: 2,
                   child: _SetCard(
+                    icon: 'eyeOff',
+                    title: 'Fullscreen background blur',
+                    subtitle: 'Blur the artwork behind the fullscreen player.',
+                    trailing: SwitchPill(
+                      value: state.settings.blurFullscreenArtwork,
+                      onTap: () => state.setFullscreenArtworkBlur(
+                          !state.settings.blurFullscreenArtwork),
+                    ),
+                    hasBody: false,
+                    child: const SizedBox.shrink(),
+                  )),
+              Reveal(
+                  index: 3,
+                  child: _SetCard(
+                    icon: 'imageOff',
+                    title: 'Fullscreen background artwork',
+                    subtitle: 'Show the cover behind the fullscreen player.',
+                    trailing: SwitchPill(
+                      value: state.settings.showFullscreenArtwork,
+                      onTap: () => state.setFullscreenArtworkVisible(
+                          !state.settings.showFullscreenArtwork),
+                    ),
+                    hasBody: false,
+                    child: const SizedBox.shrink(),
+                  )),
+              Reveal(
+                  index: 4,
+                  child: _SetCard(
                     icon: 'volume',
                     title: 'Streaming quality',
                     subtitle: 'Higher quality uses more data.',
                     child: _QualitySeg(state: state),
                   )),
-              Reveal(index: 3, child: _EqCard(state: state)),
+              Reveal(index: 5, child: _EqCard(state: state)),
               Reveal(
-                  index: 4,
+                  index: 6,
                   child: _SetCard(
                     icon: 'bolt',
                     title: 'Server',
@@ -152,7 +180,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     child: _ServerList(state: state),
                   )),
               Reveal(
-                  index: 5,
+                  index: 6,
                   child: _SetCard(
                     icon: 'folderPlus',
                     title: 'Import music',
@@ -166,7 +194,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     child: const SizedBox.shrink(),
                   )),
               Reveal(
-                  index: 6,
+                  index: 7,
                   child: _SetCard(
                     icon: 'user',
                     title: 'Account',
