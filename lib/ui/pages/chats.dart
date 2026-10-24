@@ -296,8 +296,22 @@ class _ChatsPageState extends State<ChatsPage> with WidgetsBindingObserver {
         _messageKeys.clear();
       });
       WidgetsBinding.instance.addPostFrameCallback((_) async {
-        final key = _messageKeys[id];
-        final targetContext = key?.currentContext;
+        if (!mounted || !_scroll.hasClients) return;
+        final index = _messages.indexWhere(
+          (item) => int.tryParse((item['id'] ?? '').toString()) == id,
+        );
+        if (index < 0) return;
+        var targetContext = _messageKeys[id]?.currentContext;
+        if (targetContext == null && _messages.length > 1) {
+          final fraction = index / (_messages.length - 1);
+          _scroll.jumpTo(
+            (_scroll.position.maxScrollExtent * fraction)
+                .clamp(0.0, _scroll.position.maxScrollExtent)
+                .toDouble(),
+          );
+          await WidgetsBinding.instance.endOfFrame;
+          targetContext = _messageKeys[id]?.currentContext;
+        }
         if (targetContext == null || !mounted) return;
         await Scrollable.ensureVisible(
           targetContext,
@@ -456,53 +470,60 @@ class _ChatsPageState extends State<ChatsPage> with WidgetsBindingObserver {
     }
   }
 
-  List<Widget> _buildTimeline() {
-    final items = <Widget>[];
-    String? previousDay;
-    for (final message in _messages) {
-      final rawTrack = message['track'];
-      if (rawTrack is Map) {
-        final trackData = rawTrack.map(
-          (key, value) => MapEntry(key.toString(), value),
-        );
-        final track = widget.state.registerTrack(Track.fromJson(trackData));
-        if (track.cover.isEmpty) {
-          widget.state.ensureCovers([track], priority: true);
-        } else if (trackData['cover'] != track.cover) {
-          message['track'] = {...trackData, 'cover': track.cover};
-        }
+  Widget _buildTimelineItem(BuildContext context, int index) {
+    final message = _messages[index];
+    final rawTrack = message['track'];
+    if (rawTrack is Map) {
+      final trackData = rawTrack.map(
+        (key, value) => MapEntry(key.toString(), value),
+      );
+      final track = widget.state.registerTrack(Track.fromJson(trackData));
+      if (track.cover.isEmpty) {
+        widget.state.ensureCovers([track], priority: true);
+      } else if (trackData['cover'] != track.cover) {
+        message['track'] = {...trackData, 'cover': track.cover};
       }
-      final rawDate = DateTime.tryParse(
-        (message['created_at'] ?? '').toString(),
-      )?.toLocal();
-      final dayKey = rawDate == null
-          ? ''
-          : '${rawDate.year}-${rawDate.month}-${rawDate.day}';
-      if (dayKey.isNotEmpty && dayKey != previousDay) {
-        items.add(_ChatDateSeparator(date: rawDate!));
-        previousDay = dayKey;
-      }
-      final sender = message['sender'];
-      final user = sender is Map
-          ? sender.map((key, value) => MapEntry(key.toString(), value))
-          : <String, dynamic>{};
-      final messageId = int.tryParse((message['id'] ?? '').toString());
-      items.add(_MessageBubble(
-        key: messageId == null
-            ? null
-            : _messageKeys.putIfAbsent(messageId, GlobalKey.new),
-        message: message,
-        meId: _me?['username']?.toString() ?? '',
-        onUserTap: () => _openUser(user),
-        me: _me ?? const <String, dynamic>{},
-        onTrackPlay: widget.state.playSharedTrack,
-        onShareLink: _openShareLink,
-        onContextMenu: (position) => _showMessageActions(message, position),
-        timeLabel: rawDate == null ? '' : _formatMessageTime(rawDate),
-        isRead: message['is_read'] == true,
-      ));
     }
-    return items;
+    final rawDate =
+        DateTime.tryParse((message['created_at'] ?? '').toString())?.toLocal();
+    final dayKey = rawDate == null
+        ? ''
+        : '${rawDate.year}-${rawDate.month}-${rawDate.day}';
+    final previousDate = index == 0
+        ? null
+        : DateTime.tryParse(
+                (_messages[index - 1]['created_at'] ?? '').toString())
+            ?.toLocal();
+    final previousDayKey = previousDate == null
+        ? ''
+        : '${previousDate.year}-${previousDate.month}-${previousDate.day}';
+    final sender = message['sender'];
+    final user = sender is Map
+        ? sender.map((key, value) => MapEntry(key.toString(), value))
+        : <String, dynamic>{};
+    final messageId = int.tryParse((message['id'] ?? '').toString());
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (dayKey.isNotEmpty && dayKey != previousDayKey)
+          _ChatDateSeparator(date: rawDate!),
+        _MessageBubble(
+          key: messageId == null
+              ? null
+              : _messageKeys.putIfAbsent(messageId, GlobalKey.new),
+          message: message,
+          meId: _me?['username']?.toString() ?? '',
+          onUserTap: () => _openUser(user),
+          me: _me ?? const <String, dynamic>{},
+          onTrackPlay: widget.state.playSharedTrack,
+          onShareLink: _openShareLink,
+          onContextMenu: (position) => _showMessageActions(message, position),
+          timeLabel: rawDate == null ? '' : _formatMessageTime(rawDate),
+          isRead: message['is_read'] == true,
+        ),
+      ],
+    );
   }
 
   Widget _buildSearchResults() {
@@ -1275,13 +1296,14 @@ class _ChatsPageState extends State<ChatsPage> with WidgetsBindingObserver {
                             : Stack(
                                 children: [
                                   Positioned.fill(
-                                    child: ListView(
+                                    child: ListView.builder(
                                       controller: _scroll,
                                       padding: EdgeInsets.symmetric(
                                         horizontal: showSidebar ? 28 : 16,
                                         vertical: 16,
                                       ),
-                                      children: _buildTimeline(),
+                                      itemCount: _messages.length,
+                                      itemBuilder: _buildTimelineItem,
                                     ),
                                   ),
                                   Positioned(
@@ -1759,59 +1781,66 @@ class _MessageBubble extends StatelessWidget {
               ],
               if (track != null) ...[
                 if (!trackOnly) const SizedBox(height: 8),
-                GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () => unawaited(onTrackPlay(track)),
-                  child: Container(
-                    width: 310,
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF25272A),
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(
-                        color: const Color(0xFF666A6D),
-                        width: 7,
-                      ),
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(11),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          AspectRatio(
-                            aspectRatio: 1,
-                            child: CoverArt(
-                              track: track,
-                              size: 278,
-                              radius: 0,
-                              openArtwork: false,
-                            ),
+                SizedBox(
+                  width: 155,
+                  child: FittedBox(
+                    alignment: Alignment.topLeft,
+                    fit: BoxFit.scaleDown,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => unawaited(onTrackPlay(track)),
+                      child: Container(
+                        width: 310,
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF25272A),
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(
+                            color: const Color(0xFF666A6D),
+                            width: 7,
                           ),
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(2, 12, 2, 3),
-                            child: Text(
-                              track.title,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(11),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              AspectRatio(
+                                aspectRatio: 1,
+                                child: CoverArt(
+                                  track: track,
+                                  size: 278,
+                                  radius: 0,
+                                  openArtwork: false,
+                                ),
                               ),
-                            ),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
-                            child: Text(
-                              'Track · ${track.artists.join(', ')}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                fontSize: 14,
-                                color: Color(0xFFE1E1E1),
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(2, 12, 2, 3),
+                                child: Text(
+                                  track.title,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
                               ),
-                            ),
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(2, 0, 2, 8),
+                                child: Text(
+                                  'Track · ${track.artists.join(', ')}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    color: Color(0xFFE1E1E1),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
                       ),
                     ),
                   ),

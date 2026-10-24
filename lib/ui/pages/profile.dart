@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/app_state.dart';
 import '../../core/models.dart';
@@ -448,6 +450,36 @@ class PublicPlaylistPage extends StatelessWidget {
   final AppState state;
   final Map<String, dynamic> playlist;
 
+  Future<void> _showDownloadDialog(BuildContext context) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Слушайте Lumino в приложении'),
+        content: const Text(
+            'Чтобы включать треки и слушать плейлист, скачайте приложение Lumino.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Закрыть'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.of(dialogContext).pop();
+              final opened = await launchUrl(
+                Uri.parse('https://theLuni.ru/lumino'),
+                mode: LaunchMode.externalApplication,
+              );
+              if (!opened && context.mounted) {
+                state.showToast('Не удалось открыть страницу загрузки');
+              }
+            },
+            child: const Text('Скачать приложение'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final name = (playlist['name'] ?? 'Playlist').toString();
@@ -458,112 +490,185 @@ class PublicPlaylistPage extends StatelessWidget {
         .whereType<Map>()
         .map((raw) => Track.fromJson(asMap(raw)))
         .toList();
+    final compact = MediaQuery.sizeOf(context).width < 600;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(32, 60, 32, 28),
+      padding: EdgeInsets.fromLTRB(
+          compact ? 18 : 32, compact ? 18 : 60, compact ? 18 : 32, 28),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: SizedBox(
-              width: 180,
-              height: 180,
-              child: cover.isEmpty
-                  ? const ColoredBox(
-                      color: Color(0xFF202024),
-                      child: Center(
-                          child: LIcon('note', size: 42, color: Colors.white)),
-                    )
-                  : imageWidget(cover, fit: BoxFit.cover),
+        if (kIsWeb)
+          Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: SizedBox(
+                width: compact ? 112 : 200,
+                height: compact ? 112 : 200,
+                child: cover.isEmpty
+                    ? const ColoredBox(
+                        color: Color(0xFF202024),
+                        child: Center(
+                            child:
+                                LIcon('note', size: 42, color: Colors.white)),
+                      )
+                    : imageWidget(cover, fit: BoxFit.cover),
+              ),
             ),
-          ),
-          const SizedBox(width: 24),
-          Expanded(
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('PUBLIC PLAYLIST',
-                  style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 1.4,
-                      color: ThemeScope.of(context).mutedForeground)),
-              const SizedBox(height: 8),
-              Text(name,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 36, fontWeight: FontWeight.w800)),
-              const SizedBox(height: 8),
-              Text('By $owner',
-                  style: TextStyle(
-                      fontSize: 13,
-                      color: ThemeScope.of(context).mutedForeground)),
-            ]),
-          ),
-        ]),
-        const SizedBox(height: 24),
-        if (tracks.isEmpty)
-          const EmptyState(text: 'This playlist has no available tracks.')
+            SizedBox(width: compact ? 14 : 24),
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('PLAYLIST',
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 1.4,
+                            color: ThemeScope.of(context).mutedForeground)),
+                    const SizedBox(height: 8),
+                    Text(name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: compact ? 26 : 40,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -1)),
+                    const SizedBox(height: 8),
+                    Text(
+                        'By $owner · ${tracks.length} ${tracks.length == 1 ? 'track' : 'tracks'}',
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: ThemeScope.of(context).mutedForeground)),
+                  ]),
+            ),
+          ])
         else
-          Expanded(
-            child: ListView.separated(
-              itemCount: tracks.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 6),
-              itemBuilder: (context, index) {
-                final track = tracks[index];
-                return Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(10),
-                    onTap: () => openTrackRelease(state, track),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 8),
-                      child: Row(children: [
-                        SizedBox(
-                          width: 38,
-                          height: 38,
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(6),
-                            child: track.cover.isEmpty
-                                ? const ColoredBox(
-                                    color: Color(0xFF202024),
-                                    child: Center(
-                                        child: LIcon('note',
-                                            size: 18, color: Colors.white)),
-                                  )
-                                : imageWidget(track.cover, fit: BoxFit.cover),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(track.title,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                        fontWeight: FontWeight.w600)),
-                                const SizedBox(height: 2),
-                                Text(track.primary,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                        fontSize: 12,
-                                        color: ThemeScope.of(context)
-                                            .mutedForeground)),
-                              ]),
-                        ),
-                        const SizedBox(width: 8),
-                        const LIcon('chevR', size: 16),
-                      ]),
-                    ),
-                  ),
-                );
-              },
+          Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: SizedBox(
+                width: 180,
+                height: 180,
+                child: cover.isEmpty
+                    ? const ColoredBox(
+                        color: Color(0xFF202024),
+                        child: Center(
+                            child:
+                                LIcon('note', size: 42, color: Colors.white)),
+                      )
+                    : imageWidget(cover, fit: BoxFit.cover),
+              ),
+            ),
+            const SizedBox(width: 24),
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('PUBLIC PLAYLIST',
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 1.4,
+                            color: ThemeScope.of(context).mutedForeground)),
+                    const SizedBox(height: 8),
+                    Text(name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 36, fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 8),
+                    Text('By $owner',
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: ThemeScope.of(context).mutedForeground)),
+                  ]),
+            ),
+          ]),
+        const SizedBox(height: 24),
+        if (kIsWeb)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: ChipButton(
+              label: 'Download app',
+              icon: 'play',
+              onTap: () => _showDownloadDialog(context),
             ),
           ),
+        const SectionTitle(title: 'Tracks'),
+        Expanded(
+          child: tracks.isEmpty
+              ? const EmptyState(text: 'This playlist has no available tracks.')
+              : ListView.builder(
+                  itemCount: tracks.length,
+                  itemBuilder: (context, index) {
+                    final track = tracks[index];
+                    if (kIsWeb) {
+                      return TrackRow(
+                        track: track,
+                        current: false,
+                        playing: false,
+                        durationText: track.duration > 0
+                            ? fmtDuration(track.duration)
+                            : '',
+                        onPlay: () => _showDownloadDialog(context),
+                        onArtist: (_) => _showDownloadDialog(context),
+                        onMenu: null,
+                        openArtwork: false,
+                      );
+                    }
+                    return Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () => openTrackRelease(state, track),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 8),
+                          child: Row(children: [
+                            SizedBox(
+                              width: 38,
+                              height: 38,
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(6),
+                                child: track.cover.isEmpty
+                                    ? const ColoredBox(
+                                        color: Color(0xFF202024),
+                                        child: Center(
+                                            child: LIcon('note',
+                                                size: 18, color: Colors.white)),
+                                      )
+                                    : imageWidget(track.cover,
+                                        fit: BoxFit.cover),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(track.title,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                            fontWeight: FontWeight.w600)),
+                                    const SizedBox(height: 2),
+                                    Text(track.primary,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                            fontSize: 12,
+                                            color: ThemeScope.of(context)
+                                                .mutedForeground)),
+                                  ]),
+                            ),
+                            const SizedBox(width: 8),
+                            const LIcon('chevR', size: 16),
+                          ]),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
       ]),
     );
   }
@@ -596,6 +701,69 @@ class _ProfilePageState extends State<ProfilePage> {
     }
     final color = await widget.state.colorFor(avatar);
     if (mounted) setState(() => _avatarColor = color);
+  }
+
+  Future<void> _editUsername() async {
+    final controller =
+        TextEditingController(text: widget.state.auth.username ?? '');
+    final username = await showGlassDialog<String>(
+      context,
+      width: 420,
+      builder: (dialogContext) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Change username',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 14),
+          TextField(
+            controller: controller,
+            autofocus: true,
+            maxLength: 32,
+            decoration: const InputDecoration(
+              labelText: 'Username',
+              prefixText: '@',
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop(controller.text.trim()),
+              child: const Text('Save'),
+            ),
+          ]),
+        ],
+      ),
+    );
+    final value = username?.trim() ?? '';
+    if (value.isEmpty || !mounted) {
+      controller.dispose();
+      return;
+    }
+    if (value.length < 3 ||
+        value.length > 32 ||
+        !RegExp(r'^[\w.@+\- ]+$').hasMatch(value)) {
+      widget.state.showToast('Username must be 3–32 valid characters.');
+      controller.dispose();
+      return;
+    }
+    try {
+      await widget.state.auth.changeUsername(value);
+      if (mounted) {
+        setState(() {});
+        widget.state.showToast('Username updated');
+      }
+    } catch (error) {
+      if (mounted) widget.state.showToast('Could not change username: $error');
+    } finally {
+      controller.dispose();
+    }
   }
 
   @override
@@ -819,6 +987,37 @@ class _ProfilePageState extends State<ProfilePage> {
                 ),
               ),
             ]),
+          ),
+          Padding(
+            padding: EdgeInsets.fromLTRB(
+                compact ? 18 : 32, 12, compact ? 18 : 32, 0),
+            child: Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                Text(
+                  '@${state.auth.username ?? ''}',
+                  style: TextStyle(
+                      fontSize: 14,
+                      color: ThemeScope.of(context).mutedForeground),
+                ),
+                ChipButton(
+                  label: 'Change username',
+                  icon: 'edit',
+                  ghost: true,
+                  onTap: _editUsername,
+                ),
+                if ((state.auth.username ?? '').isNotEmpty)
+                  ChipButton(
+                    label: 'Share profile',
+                    icon: 'share',
+                    ghost: true,
+                    onTap: () =>
+                        shareProfile(context, state, state.auth.username!),
+                  ),
+              ],
+            ),
           ),
           Padding(
             padding: EdgeInsets.fromLTRB(

@@ -12,6 +12,7 @@ import 'meta_service.dart';
 import 'models.dart';
 import 'node_service.dart';
 import 'persistence.dart';
+import 'performance_monitor.dart';
 import 'utils.dart';
 
 class PageRef {
@@ -127,6 +128,7 @@ class AppState extends ChangeNotifier {
   bool _recsRunning = false;
   Timer? _recsTimer;
   Set<String>? knownPlayable;
+  List<DailyMix>? _dailyMixCache;
 
   AppSettings settings = AppSettings();
   Profile profile = Profile();
@@ -378,11 +380,19 @@ class AppState extends ChangeNotifier {
     };
   }
 
-  void save() => persistence.scheduleSave(storeSnapshot);
+  void save() {
+    _invalidateDailyMixes();
+    persistence.scheduleSave(storeSnapshot);
+  }
+
+  void _invalidateDailyMixes() {
+    _dailyMixCache = null;
+  }
 
   Future<void> resetAll() async {
     await persistence.deleteState();
     await audio.stop();
+    _invalidateDailyMixes();
     byId.clear();
     liked.clear();
     queue.clear();
@@ -468,6 +478,7 @@ class AppState extends ChangeNotifier {
   }
 
   void _refreshDailyMixLists() {
+    _invalidateDailyMixes();
     for (var i = 0; i < 5; i++) {
       lists.remove('mix$i');
       mixSeeds.remove('mix$i');
@@ -507,13 +518,13 @@ class AppState extends ChangeNotifier {
 
   void openFull() {
     fullScreen = true;
-    audio.positionUpdateInterval = const Duration(milliseconds: 250);
+    audio.positionUpdateInterval = const Duration(milliseconds: 50);
     notifyListeners();
   }
 
   void closeFull() {
     fullScreen = false;
-    audio.positionUpdateInterval = const Duration(seconds: 1);
+    audio.positionUpdateInterval = const Duration(milliseconds: 50);
     notifyListeners();
   }
 
@@ -557,6 +568,7 @@ class AppState extends ChangeNotifier {
                   existing.coverSource != 'deezer'))) {
         existing.cover = track.cover;
         existing.coverSource = track.coverSource;
+        _invalidateDailyMixes();
       }
       if (existing.src.isEmpty && track.src.isNotEmpty) {
         existing.src = track.src;
@@ -571,6 +583,7 @@ class AppState extends ChangeNotifier {
       return existing;
     }
     byId[track.id] = track;
+    _invalidateDailyMixes();
     return track;
   }
 
@@ -957,7 +970,7 @@ class AppState extends ChangeNotifier {
         continue;
       }
       _coverTried.remove(track.id);
-      noCover.remove(track.id);
+      if (noCover.remove(track.id)) _invalidateDailyMixes();
       retry.add(track);
     }
     ensureCovers(retry, priority: true);
@@ -1001,7 +1014,10 @@ class AppState extends ChangeNotifier {
             }
           }
         }));
-        if (changed) _notifySoon();
+        if (changed) {
+          _invalidateDailyMixes();
+          _notifySoon();
+        }
         _coverBusy--;
         _pumpCovers();
       }();
@@ -1078,6 +1094,7 @@ class AppState extends ChangeNotifier {
       }
     }
     if (changed) {
+      _invalidateDailyMixes();
       // Обложки не ставим для всего каталога: строки запрашивают их сами, когда попадают в окно.
       _notifySoon();
     }
@@ -1178,7 +1195,12 @@ class AppState extends ChangeNotifier {
     if (pageName == 'home') scheduleRecs(6000);
   }
 
-  List<TasteArtist> tasteArtists() {
+  List<TasteArtist> tasteArtists() => PerformanceMonitor.instance.measureSync(
+        'tasteArtists',
+        _buildTasteArtists,
+      );
+
+  List<TasteArtist> _buildTasteArtists() {
     final weights = <String, TasteArtist>{};
     void add(String name, double value) {
       final key = norm(name);
@@ -1220,6 +1242,16 @@ class AppState extends ChangeNotifier {
   }
 
   List<DailyMix> dailyMixes() {
+    final cached = _dailyMixCache;
+    if (cached != null) return cached;
+    return PerformanceMonitor.instance.measureSync('dailyMixes', () {
+      final mixes = _buildDailyMixes();
+      _dailyMixCache = mixes;
+      return mixes;
+    });
+  }
+
+  List<DailyMix> _buildDailyMixes() {
     final pool = availableTracks()
         .where((t) => t.cover.isNotEmpty || !noCover.contains(t.id))
         .toList();
@@ -1321,7 +1353,10 @@ class AppState extends ChangeNotifier {
       } catch (_) {}
       for (var seed in seeds) {
         final list = map[seed.name];
-        if (list != null && list.isNotEmpty) similar[seed.key] = list;
+        if (list != null && list.isNotEmpty) {
+          similar[seed.key] = list;
+          _invalidateDailyMixes();
+        }
       }
       final seen = seeds.map((s) => s.key).toSet();
       for (final track in libraryTracks()) {

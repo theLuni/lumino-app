@@ -162,17 +162,25 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
       final viewportBox =
           _scroll.position.context.storageContext.findRenderObject();
       if (lineBox is RenderBox && viewportBox is RenderBox) {
-        final lineTop = lineBox.localToGlobal(Offset.zero).dy;
-        final lineBottom = lineTop + lineBox.size.height;
-        final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
-        final viewportBottom = viewportTop + viewportBox.size.height;
-        if (lineTop >= viewportTop && lineBottom <= viewportBottom) return;
+        final viewportHeight = viewportBox.size.height;
+        final alignment = viewportHeight > 0
+            ? (0.5 - lineBox.size.height / (2 * viewportHeight))
+                .clamp(0.2, 0.8)
+                .toDouble()
+            : 0.5;
+        Scrollable.ensureVisible(
+          built,
+          alignment: alignment,
+          duration: const Duration(milliseconds: 520),
+          curve: Curves.easeInOutCubic,
+        );
+        return;
       }
       Scrollable.ensureVisible(
         built,
         alignment: 0.5,
         duration: const Duration(milliseconds: 520),
-        curve: Curves.easeOutCubic,
+        curve: Curves.easeInOutCubic,
       );
       return;
     }
@@ -271,7 +279,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
       opacity: 0.9,
       child: Transform.scale(
         scale: 1.12,
-        child: imageWidget(track.cover, cacheWidth: 1800),
+        child: imageWidget(track.cover, cacheWidth: 1600),
       ),
     );
     final showArtwork = widget.state.settings.showFullscreenArtwork;
@@ -408,7 +416,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
                 CoverArt(
                   track: track,
                   radius: 14,
-                  cacheWidth: 2400,
+                  cacheWidth: 800,
                   onTap: () => openTrackRelease(state, track),
                 ),
                 AnimatedOpacity(
@@ -813,7 +821,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
             }
             return TweenAnimationBuilder<double>(
               tween: Tween<double>(end: progress),
-              duration: const Duration(milliseconds: 90),
+              duration: const Duration(milliseconds: 80),
               curve: Curves.linear,
               builder: (context, fill, child) => Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

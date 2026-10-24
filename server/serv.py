@@ -1878,8 +1878,15 @@ class Handler(BaseHTTPRequestHandler):
         if not valid:
             return self._fail("ссылка недействительна", 404)
 
+        profile_data = None
+        if kind == "profile":
+            user = find_user(params["username"])
+            profile_data = _public_user_profile(user) if user else {}
         title, author, cover, author_avatar = self._share_page_metadata(
-            kind, params
+            kind, params, profile_data
+        )
+        playlist_tracks = (
+            self._share_page_playlist_tracks(params) if kind == "playlist" else []
         )
         if parsed_path.path == "/share":
             app_link = "lumino://%s?%s" % (
@@ -1891,6 +1898,7 @@ class Handler(BaseHTTPRequestHandler):
         safe_author = html.escape(author)
         safe_cover = html.escape(cover, quote=True)
         safe_author_avatar = html.escape(author_avatar, quote=True)
+        og_type = "profile" if kind == "profile" else "music.playlist" if kind == "playlist" else "music.song"
         nonce = secrets.token_urlsafe(18)
         cover_html = (
             '<img class="cover" src="%s" alt="" referrerpolicy="no-referrer">'
@@ -1904,11 +1912,233 @@ class Handler(BaseHTTPRequestHandler):
             if author_avatar
             else '<span class="author-avatar placeholder-avatar">L</span>'
         )
+        is_playlist = kind == "playlist"
+        is_profile = kind == "profile"
+        page_class = " playlist" if is_playlist else " profile" if is_profile else ""
+        if is_playlist or is_profile:
+            def track_rows(tracks: list[dict]) -> str:
+                rows = []
+                for track in tracks:
+                    track_title = html.escape(str(track.get("title") or "Трек")[:200])
+                    raw_artists = track.get("artists")
+                    artists = (
+                        ", ".join(
+                            html.escape(str(value)[:120])
+                            for value in raw_artists[:10]
+                            if str(value).strip()
+                        )
+                        if isinstance(raw_artists, list)
+                        else ""
+                    )
+                    track_cover = _share_image_url(track.get("cover"))
+                    track_cover_html = (
+                        '<img class="track-cover" src="%s" alt="" referrerpolicy="no-referrer">'
+                        % html.escape(track_cover, quote=True)
+                        if track_cover
+                        else '<span class="track-cover track-placeholder">♪</span>'
+                    )
+                    try:
+                        duration = max(0, int(track.get("duration") or 0))
+                    except (ValueError, TypeError, OverflowError):
+                        duration = 0
+                    duration_html = (
+                        '<span class="track-duration">%d:%02d</span>'
+                        % (duration // 60, duration % 60)
+                        if duration
+                        else ""
+                    )
+                    rows.append(
+                        '<button class="track-row" type="button">'
+                        + track_cover_html
+                        + '<span class="track-info"><span class="track-title">'
+                        + track_title
+                        + '</span><span class="track-artist">'
+                        + (artists or "Неизвестный исполнитель")
+                        + "</span></span>"
+                        + duration_html
+                        + "</button>"
+                    )
+                return "".join(rows)
+
+            modal_html = (
+                '<dialog id="download-modal" class="download-modal">'
+                "<h2>Слушайте в приложении Lumino</h2>"
+                "<p>Чтобы включать треки и слушать музыку, "
+                "скачайте приложение.</p>"
+                '<a class="open" href="https://theLuni.ru/lumino" '
+                'target="_blank" rel="noopener">Скачать приложение</a>'
+                '<button class="modal-close" type="button">Закрыть</button>'
+                "</dialog>"
+            )
+            script = (
+                "document.querySelectorAll('.track-row').forEach(function(row){"
+                "row.addEventListener('click',function(){"
+                "document.getElementById('download-modal').showModal();});});"
+                "document.querySelector('.modal-close').addEventListener("
+                "'click',function(){document.getElementById('download-modal').close();});"
+            )
+            if is_playlist:
+                share_content = (
+                    '<header class="playlist-header">'
+                    + cover_html
+                    + '<div class="playlist-info"><p class="eyebrow">ПЛЕЙЛИСТ</p>'
+                    + '<h1 class="title playlist-title">'
+                    + safe_title
+                    + '</h1><p class="author">'
+                    + author_avatar_html
+                    + safe_author
+                    + " · "
+                    + str(len(playlist_tracks))
+                    + (" трек" if len(playlist_tracks) == 1 else " треков")
+                    + "</p></div></header>"
+                    + '<section class="track-list"><h2>Треки</h2>'
+                    + (
+                        track_rows(playlist_tracks)
+                        or (
+                            '<p class="empty-state">В этом плейлисте '
+                            "пока нет треков.</p>"
+                        )
+                    )
+                    + "</section>"
+                )
+                action_html = (
+                    '<a class="open" href="https://theLuni.ru/lumino" '
+                    'target="_blank" rel="noopener">Скачать приложение</a>'
+                )
+                hint_html = (
+                    '<p class="hint">Нажмите на трек, чтобы узнать, '
+                    "как слушать "
+                    "плейлист в приложении Lumino.</p>"
+                )
+            else:
+                profile_data = profile_data or {}
+                username = str(profile_data.get("username") or params["username"])
+                safe_username = html.escape(username)
+                public_playlists = profile_data.get("public_playlists", [])
+                liked_tracks = profile_data.get("liked_tracks", [])
+                playlist_cards = []
+                for playlist in (
+                    public_playlists if isinstance(public_playlists, list) else []
+                ):
+                    if not isinstance(playlist, dict):
+                        continue
+                    playlist_name = html.escape(
+                        str(playlist.get("name") or "Плейлист")[:200]
+                    )
+                    playlist_id = str(playlist.get("id") or "")
+                    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", playlist_id):
+                        continue
+                    playlist_url = "/share?" + urllib.parse.urlencode(
+                        {"type": "playlist", "username": username, "id": playlist_id}
+                    )
+                    playlist_cover = _share_image_url(playlist.get("cover"))
+                    playlist_cover_html = (
+                        '<img class="playlist-cover" src="%s" alt="" '
+                        'referrerpolicy="no-referrer">'
+                        % html.escape(playlist_cover, quote=True)
+                        if playlist_cover
+                        else '<span class="playlist-cover playlist-placeholder">♪</span>'
+                    )
+                    tracks = playlist.get("tracks", [])
+                    track_count = len(tracks) if isinstance(tracks, list) else 0
+                    playlist_cards.append(
+                        '<a class="playlist-card" href="%s">'
+                        % html.escape(playlist_url, quote=True)
+                        + playlist_cover_html
+                        + '<span class="playlist-card-info"><span class="playlist-card-title">'
+                        + playlist_name
+                        + '</span><span class="playlist-card-meta">'
+                        + str(track_count)
+                        + (" трек" if track_count == 1 else " треков")
+                        + "</span></span></a>"
+                    )
+                playlist_section = (
+                    '<section class="profile-section"><h2>Публичные плейлисты</h2>'
+                    + (
+                        '<div class="playlist-grid">' + "".join(playlist_cards) + "</div>"
+                        if playlist_cards
+                        else (
+                            '<p class="empty-state">Публичных плейлистов '
+                            "пока нет.</p>"
+                        )
+                    )
+                    + "</section>"
+                )
+                liked_tracks = (
+                    [track for track in liked_tracks if isinstance(track, dict)]
+                    if isinstance(liked_tracks, list)
+                    else []
+                )
+                liked_section = (
+                    '<section class="profile-section"><h2>Любимые треки</h2>'
+                    + (
+                        '<div class="track-list">'
+                        + track_rows(liked_tracks)
+                        + "</div>"
+                        if liked_tracks
+                        else (
+                            '<p class="empty-state">Пользователь пока не '
+                            "добавил любимые треки.</p>"
+                        )
+                    )
+                    + "</section>"
+                )
+                share_content = (
+                    '<header class="profile-header">'
+                    + author_avatar_html
+                    + '<div class="profile-info"><p class="eyebrow">ПРОФИЛЬ LUMINO</p>'
+                    + '<h1 class="title profile-title">'
+                    + safe_title
+                    + '</h1><p class="profile-username">@'
+                    + safe_username
+                    + "</p></div></header>"
+                    + playlist_section
+                    + liked_section
+                )
+                action_html = (
+                    '<a class="open" href="%s">Открыть профиль в Lumino</a>'
+                    % safe_link
+                )
+                hint_html = (
+                    '<p class="hint">Откройте профиль в приложении, '
+                    "чтобы слушать "
+                    "музыку и управлять плейлистами.</p>"
+                )
+        else:
+            share_content = (
+                cover_html
+                + '<h1 class="title">'
+                + safe_title
+                + '</h1><p class="author">'
+                + author_avatar_html
+                + safe_author
+                + "</p>"
+            )
+            action_html = (
+                '<a id="open-app" class="open" href="%s">Открыть в Lumino</a>'
+                % safe_link
+            )
+            hint_html = (
+                '<p class="hint">Если приложение не открылось, установите Lumino '
+                "и нажмите кнопку ещё раз.</p>"
+            )
+            modal_html = (
+                '<div id="open-help" class="fallback" hidden>'
+                "Lumino не открылся? На Windows установите приложение через Lumino "
+                "Installer, чтобы зарегистрировать ссылку. Затем вернитесь сюда и "
+                "нажмите «Открыть в Lumino» ещё раз.</div>"
+            )
+            script = (
+                "document.getElementById('open-app').addEventListener("
+                "'click',function(){setTimeout(function(){if(document.visibilityState"
+                "==='visible'){document.getElementById('open-help').hidden=false;}},"
+                "1400);});"
+            )
         body = (
             "<!doctype html><html lang=\"ru\"><head><meta charset=\"utf-8\">"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             "<meta name=\"theme-color\" content=\"#111111\">"
-            "<meta property=\"og:type\" content=\"music.song\">"
+            "<meta property=\"og:type\" content=\"%s\">"
             "<meta property=\"og:title\" content=\"%s\">"
             "<meta property=\"og:description\" content=\"%s · Lumino\">"
             "<meta name=\"twitter:card\" content=\"summary_large_image\">"
@@ -1916,10 +2146,14 @@ class Handler(BaseHTTPRequestHandler):
             "<meta name=\"twitter:description\" content=\"%s · Lumino\">"
             "%s<title>%s · Lumino</title><style>"
             "*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;"
-            "place-items:center;padding:24px;background:#0b0b0b;color:#f7f7f7;"
-            "font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}"
-            ".card{width:min(100%%,420px);padding:24px;border:1px solid #303030;"
-            "border-radius:24px;background:#171717;box-shadow:0 24px 80px #000a}"
+            "place-items:center;padding:24px;background:#0a0a0b;color:#f7f7f7;"
+            "font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"
+            "background-image:radial-gradient(900px 560px at 8%% -12%%,#ffffff18,transparent 65%%),"
+            "radial-gradient(780px 560px at 95%% 4%%,#ffffff12,transparent 62%%),"
+            "radial-gradient(900px 650px at 50%% 120%%,#ffffff10,transparent 65%%)}"
+            ".card{width:min(100%%,420px);padding:24px;border:1px solid #ffffff20;"
+            "border-radius:24px;background:linear-gradient(145deg,#1a1a1bea,#111112f5);"
+            "box-shadow:0 24px 80px #000a;backdrop-filter:blur(16px)}"
             ".brand{display:flex;align-items:center;gap:9px;margin-bottom:22px;"
             "font-size:14px;font-weight:700;letter-spacing:.08em;color:#f2f2f2}"
             ".logo-avatar{display:block;width:30px;height:30px;border-radius:9px;"
@@ -1942,21 +2176,62 @@ class Handler(BaseHTTPRequestHandler):
             ".fallback{margin-top:14px;padding:12px;border:1px solid #343434;"
             "border-radius:12px;background:#202020;color:#c2c2c2;font-size:13px}"
             ".fallback[hidden]{display:none}"
-            "</style></head><body><main class=\"card\"><div class=\"brand\">"
+            ".card.playlist{width:min(100%%,960px)}.playlist-header{display:flex;"
+            "align-items:end;gap:24px;margin:10px 0 28px}.playlist-header .cover{"
+            "flex:0 0 200px;width:200px;margin:0}.playlist-info{min-width:0;flex:1}"
+            ".eyebrow{margin:0 0 8px;color:#a5a5a5;font-size:11px;"
+            "font-weight:700;letter-spacing:.12em}.playlist-title{text-align:left;"
+            "font-size:clamp(26px,5vw,40px);overflow-wrap:anywhere}.playlist-info .author{"
+            "justify-content:flex-start;margin:12px 0 0}.track-list h2{margin:0 0 8px;"
+            "font-size:19px}.track-row{display:flex;align-items:center;gap:14px;width:100%%;"
+            "padding:6px 10px;border:0;border-radius:10px;background:transparent;"
+            "color:#f7f7f7;text-align:left;font:inherit;cursor:pointer}.track-row:hover{"
+            "background:#ffffff12}.track-cover{display:block;flex:0 0 48px;width:48px;"
+            "height:48px;border-radius:7px;object-fit:cover;background:#252525}"
+            ".track-placeholder{display:grid;place-items:center;font-size:22px}"
+            ".track-info{display:flex;min-width:0;flex:1;flex-direction:column;gap:2px}"
+            ".track-title,.track-artist{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+            ".track-title{font-size:15px;font-weight:600}.track-artist,.track-duration{"
+            "color:#a5a5a5;font-size:13px}.download-modal{width:min(100%% - 32px,440px);"
+            "padding:24px;border:1px solid #383838;border-radius:18px;background:#171717;"
+            "color:#f7f7f7}.download-modal::backdrop{background:#000b}.download-modal h2{"
+            "margin:0 0 10px;font-size:21px}.download-modal p{color:#c9c9c9}"
+            ".modal-close{display:block;width:100%%;margin-top:10px;padding:11px;border:0;"
+            "border-radius:12px;background:#303030;color:#fff;font:inherit;cursor:pointer}"
+            ".card.profile{width:min(100%%,960px)}.profile-header{display:flex;"
+            "align-items:center;gap:20px;margin:4px 0 30px}.profile-header .author-avatar,"
+            ".profile-header .placeholder-avatar{width:88px;height:88px;flex:0 0 88px;"
+            "border-radius:50%%;object-fit:cover;background:#353535}.profile-info{min-width:0}"
+            ".profile-title{text-align:left;font-size:clamp(28px,5vw,42px);"
+            "overflow-wrap:anywhere}.profile-username{margin:6px 0 0;color:#a5a5a5}"
+            ".profile-section{margin-top:28px}.profile-section h2,.track-list h2{"
+            "margin:0 0 10px;font-size:19px;letter-spacing:-.02em}"
+            ".playlist-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));"
+            "gap:10px}.playlist-card{display:flex;align-items:center;gap:12px;min-width:0;"
+            "padding:10px;border:1px solid #ffffff12;border-radius:14px;background:#ffffff08;"
+            "color:#f7f7f7;text-decoration:none;transition:background .18s ease,border-color .18s ease}"
+            ".playlist-card:hover{background:#ffffff14;border-color:#ffffff28}"
+            ".playlist-cover{display:grid;place-items:center;width:56px;height:56px;flex:0 0 56px;"
+            "border-radius:9px;object-fit:cover;background:#252525;font-size:24px}"
+            ".playlist-card-info{display:flex;min-width:0;flex-direction:column;gap:3px}"
+            ".playlist-card-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}"
+            ".playlist-card-meta,.empty-state{color:#a5a5a5;font-size:13px}"
+            ".empty-state{margin:8px 0}.track-row:focus-visible,.playlist-card:focus-visible,"
+            ".open:focus-visible,.modal-close:focus-visible{outline:2px solid #fff;outline-offset:3px}"
+            "@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;"
+            "transition-duration:.01ms!important}}"
+            "@media(max-width:600px){body{padding:12px}.card{padding:18px;border-radius:20px}"
+            ".playlist-header{align-items:center;gap:14px}"
+            ".playlist-header .cover{flex-basis:112px;width:112px}.playlist-header .author{"
+            "font-size:12px}.profile-header{gap:14px}.profile-header .author-avatar,"
+            ".profile-header .placeholder-avatar{width:64px;height:64px;flex-basis:64px}"
+            ".track-row{gap:10px;padding:6px 4px}.playlist-grid{grid-template-columns:1fr}}"
+            "</style></head><body><main class=\"card%s\"><div class=\"brand\">"
             "<img class=\"logo-avatar\" src=\"/share/lumino.png\" alt=\"Lumino\">"
-            "<span>LUMINO</span></div>%s"
-            "<h1 class=\"title\">%s</h1><p class=\"author\">%s%s</p>"
-            "<a id=\"open-app\" class=\"open\" href=\"%s\">Открыть в Lumino</a>"
-            "<p class=\"hint\">Если приложение не открылось, установите Lumino "
-            "и нажмите кнопку ещё раз.</p><div id=\"open-help\" class=\"fallback\" hidden>"
-            "Lumino не открылся? На Windows установите приложение через Lumino "
-            "Installer, чтобы зарегистрировать ссылку. Затем вернитесь сюда и "
-            "нажмите «Открыть в Lumino» ещё раз.</div></main>"
-            "<script nonce=\"%s\">document.getElementById('open-app').addEventListener("
-            "'click',function(){setTimeout(function(){if(document.visibilityState"
-            "==='visible'){document.getElementById('open-help').hidden=false;}},"
-            "1400);});</script></body></html>"
+            "<span>LUMINO</span></div>%s%s%s%s</main>"
+            "<script nonce=\"%s\">%s</script></body></html>"
             % (
+                og_type,
                 safe_title,
                 safe_author,
                 safe_title,
@@ -1965,12 +2240,13 @@ class Handler(BaseHTTPRequestHandler):
                 if cover
                 else "",
                 safe_title,
-                cover_html,
-                safe_title,
-                author_avatar_html,
-                safe_author,
-                safe_link,
+                page_class,
+                share_content,
+                action_html,
+                hint_html,
+                modal_html,
                 nonce,
+                script,
             )
         )
         return self._send(
@@ -1980,14 +2256,49 @@ class Handler(BaseHTTPRequestHandler):
             extra=(
                 (
                     "Content-Security-Policy",
-                    "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; "
+                    "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' https: data:; "
                     "script-src 'nonce-%s'" % nonce,
                 ),
             ),
         )
 
+    def _share_page_playlist_tracks(self, params: dict) -> list[dict]:
+        if "token" in params:
+            token_hash = hashlib.sha256(params["token"].encode("ascii")).hexdigest()
+            share = one(
+                "SELECT user_id, playlist_id FROM private_playlist_shares "
+                "WHERE token_hash = ?",
+                (token_hash,),
+            )
+            if not share:
+                return []
+            row = one(
+                "SELECT data FROM user_state WHERE user_id = ?",
+                (share["user_id"],),
+            )
+            try:
+                state = json.loads(row["data"]) if row else {}
+            except (ValueError, TypeError):
+                return []
+            playlist = _playlist_share_data(state, str(share["playlist_id"]))
+        else:
+            user = find_user(params.get("username", ""))
+            if not user:
+                return []
+            profile = _public_user_profile(user)
+            playlist = next(
+                (
+                    item
+                    for item in profile.get("public_playlists", [])
+                    if str(item.get("id") or "") == params.get("id")
+                ),
+                None,
+            )
+        tracks = playlist.get("tracks", []) if playlist else []
+        return [track for track in tracks if isinstance(track, dict)]
+
     def _share_page_metadata(
-        self, kind: str, params: dict
+        self, kind: str, params: dict, profile_data: dict | None = None
     ) -> tuple[str, str, str, str]:
         if kind == "track":
             try:
@@ -2009,13 +2320,14 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         if kind == "profile":
-            user = find_user(params["username"])
-            if not user:
+            if profile_data is None:
+                user = find_user(params["username"])
+                profile_data = _public_user_profile(user) if user else {}
+            if not profile_data:
                 return "Профиль не найден", "Lumino", "", ""
-            profile = _public_user_profile(user)
-            avatar = _share_image_url(profile.get("avatar"))
+            avatar = _share_image_url(profile_data.get("avatar"))
             return (
-                str(profile.get("display_name") or profile.get("username") or "Профиль")[:200],
+                str(profile_data.get("display_name") or profile_data.get("username") or "Профиль")[:200],
                 "Профиль Lumino",
                 avatar,
                 avatar,
@@ -2667,6 +2979,24 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/api/chat/"):
             return self.chat_post(path, body)
+        if path == "/api/auth/username":
+            user = self._user()
+            if not user:
+                return self._fail("нужно войти", 401)
+            username = str(body.get("username") or "").strip()
+            if not 3 <= len(username) <= 32:
+                return self._fail("имя от 3 до 32 символов")
+            if not re.fullmatch(r"[\w.@+\- ]+", username):
+                return self._fail("в имени только буквы, цифры и . _ @ + -")
+            duplicate = one(
+                "SELECT id FROM users WHERE lower(username) = lower(?) AND id != ?",
+                (username, user["id"]),
+            )
+            if duplicate:
+                return self._fail("такое имя уже занято", 409)
+            execute("UPDATE users SET username = ? WHERE id = ?",
+                    (username, user["id"]))
+            return self._json({"ok": True, "user": public_user(find_user(username))})
         if path == "/api/share/private-playlist":
             user = self._user()
             if not user:

@@ -2,20 +2,23 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
+
 enum LogLevel { debug, info, warn, error }
 
 /// Lumino's own log file: server-node traffic, failovers, catalog/lyrics/meta
 /// requests and uncaught errors.
 ///
-/// Location: `<app data>/Lumino/logs/lumino.log`. When the file reaches
-/// [maxFileBytes] it is rotated to `lumino.1.log` ... `lumino.3.log`.
+/// Debug builds write to `<app data>/Lumino/logs/lumino.log`. When the file
+/// reaches [maxFileBytes] it is rotated to `lumino.1.log` ... `lumino.3.log`.
 ///
 /// Lines are buffered in memory and written in batches every [flushInterval],
 /// so logging never waits on the disk inside a UI frame or a network call.
 /// Logging is best-effort: if the folder cannot be created, the app still runs
 /// and the newest [maxBuffered] lines are kept in memory only.
 ///
-/// Scopes used in the file: `node`, `catalog`, `lyrics`, `meta`, `app`, `flutter`.
+/// Scopes used in the file: `node`, `catalog`, `lyrics`, `meta`, `app`,
+/// `flutter`, `image`, `performance`.
 class AppLog {
   AppLog._();
   static final AppLog instance = AppLog._();
@@ -51,6 +54,7 @@ class AppLog {
   /// Opens the log file under [appDir]. Lines logged before this call are kept
   /// in memory and written once the file is open.
   Future<void> init(Directory appDir) async {
+    if (!kDebugMode) return;
     try {
       final dir = Directory('${appDir.path}${Platform.pathSeparator}logs');
       await dir.create(recursive: true);
@@ -73,6 +77,7 @@ class AppLog {
     Object? error,
     StackTrace? stack,
   }) {
+    if (!kDebugMode) return;
     if (level.index < minLevel.index) return;
     final buffer = StringBuffer()
       ..write(DateTime.now().toIso8601String())
@@ -140,6 +145,7 @@ class AppLog {
 
   /// Flushes everything and closes the file. Call before the app quits.
   Future<void> close() async {
+    if (!kDebugMode) return;
     log(LogLevel.info, 'app', '=== session end ===');
     _timer?.cancel();
     _timer = null;

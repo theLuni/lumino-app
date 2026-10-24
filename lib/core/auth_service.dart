@@ -94,6 +94,11 @@ class AuthService {
         {'email': email, 'code': code, 'new_password': newPassword});
   }
 
+  Future<void> changeUsername(String value) async {
+    final data = await _post('/api/auth/username', {'username': value});
+    _setUser(data['user']);
+  }
+
   /// Health check (GET /health). Updates [status] and returns true if the server is up.
   Future<bool> ping() async {
     try {

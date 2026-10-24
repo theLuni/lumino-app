@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/app_state.dart';
 import '../core/app_rest_mode.dart';
 import '../core/models.dart';
+import '../core/performance_monitor.dart';
 import 'actions.dart';
 import 'design.dart';
 import 'fullscreen.dart';
@@ -272,6 +273,12 @@ class _ShellContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final mobile = !desktop;
+    final screen = state.fullScreen
+        ? '${state.pageName}/fullscreen'
+        : state.queueOpen
+            ? '${state.pageName}/queue'
+            : state.pageName;
+    PerformanceMonitor.instance.setScreen(screen);
     return Stack(children: [
       Positioned.fill(
           child: RepaintBoundary(child: _Ambient(black: black, light: light))),
@@ -1196,18 +1203,25 @@ class _PlayerProgressState extends State<_PlayerProgress> {
             child: SizedBox.expand(
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: FractionallySizedBox(
-                  widthFactor: value,
-                  heightFactor: 1,
-                  child: const DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.centerLeft,
-                        end: Alignment.centerRight,
-                        colors: [
-                          Color(0x376E6E72),
-                          Color(0x376E6E72),
-                        ],
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween<double>(end: value),
+                  duration: _dragging
+                      ? Duration.zero
+                      : const Duration(milliseconds: 80),
+                  curve: Curves.linear,
+                  builder: (context, progress, child) => FractionallySizedBox(
+                    widthFactor: progress,
+                    heightFactor: 1,
+                    child: const DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.centerLeft,
+                          end: Alignment.centerRight,
+                          colors: [
+                            Color(0x376E6E72),
+                            Color(0x376E6E72),
+                          ],
+                        ),
                       ),
                     ),
                   ),

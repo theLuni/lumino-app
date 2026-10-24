@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/gestures.dart';
@@ -23,6 +23,7 @@ import 'core/meta_service.dart';
 import 'core/node_service.dart';
 import 'core/auth_service.dart';
 import 'core/persistence.dart';
+import 'core/performance_monitor.dart';
 import 'core/server_status.dart';
 import 'core/share_links.dart';
 import 'ui/auth.dart';
@@ -38,18 +39,25 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   _configureRestMode();
 
+  final imageCache = PaintingBinding.instance.imageCache
+    ..maximumSize = 200
+    ..maximumSizeBytes = 64 * 1024 * 1024;
+
   // Route every uncaught error into the log file, including ones that happen
   // before the UI is up.
-  FlutterError.onError = (details) {
-    AppLog.instance.log(LogLevel.error, 'flutter', details.exceptionAsString(),
-        stack: details.stack);
-    FlutterError.presentError(details);
-  };
-  PlatformDispatcher.instance.onError = (error, stack) {
-    AppLog.instance.log(LogLevel.error, 'app', 'uncaught error',
-        error: error, stack: stack);
-    return true;
-  };
+  if (kDebugMode) {
+    FlutterError.onError = (details) {
+      AppLog.instance.log(
+          LogLevel.error, 'flutter', details.exceptionAsString(),
+          stack: details.stack);
+      FlutterError.presentError(details);
+    };
+    PlatformDispatcher.instance.onError = (error, stack) {
+      AppLog.instance.log(LogLevel.error, 'app', 'uncaught error',
+          error: error, stack: stack);
+      return true;
+    };
+  }
 
   if (_isDesktop) await windowManager.ensureInitialized();
 
@@ -92,7 +100,16 @@ Future<void> main() async {
   MediaKit.ensureInitialized();
 
   final persistence = Persistence();
-  await AppLog.instance.init(await persistence.ensureDir());
+  if (kDebugMode) {
+    await AppLog.instance.init(await persistence.ensureDir());
+    AppLog.instance.log(
+      LogLevel.info,
+      'performance',
+      'image-cache maxEntries=${imageCache.maximumSize} '
+          'maxDecodedMB=${imageCache.maximumSizeBytes ~/ (1024 * 1024)}',
+    );
+    PerformanceMonitor.instance.start();
+  }
   final windowListener = _AppWindowListener();
   if (_isDesktop) windowManager.addListener(windowListener);
 
@@ -112,9 +129,7 @@ void _configureRestMode() {
     ..onWake = () {
       final state = _liveState;
       if (state != null) {
-        state.audio.positionUpdateInterval = state.fullScreen
-            ? const Duration(milliseconds: 250)
-            : const Duration(seconds: 1);
+        state.audio.positionUpdateInterval = const Duration(milliseconds: 50);
       }
     };
 }

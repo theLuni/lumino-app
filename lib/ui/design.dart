@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/app_log.dart';
+import '../core/performance_monitor.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
@@ -482,8 +483,13 @@ class TapArea extends StatelessWidget {
 final Map<String, Uint8List> _dataUrlCache = {};
 const int _imageCacheMaxBytes = 64 * 1024 * 1024;
 const int _imageCacheMaxDownloadBytes = 12 * 1024 * 1024;
+const int _imageCachePruneByteInterval = 16 * 1024 * 1024;
 final Map<String, Future<Uint8List?>> _imageDownloads = {};
 Future<Directory>? _imageCacheDirectory;
+Future<void>? _imageCachePruning;
+Future<void> _imageDecodeQueue = Future<void>.value();
+DateTime _lastImageCachePrune = DateTime.fromMillisecondsSinceEpoch(0);
+int _imageCacheBytesSincePrune = 0;
 
 /// The same data URL used to be base64-decoded on every build. Returning the
 /// identical Uint8List lets Flutter's image cache recognise it and skip decoding.
@@ -542,6 +548,35 @@ Uint8List? _compressImageForCache(Uint8List source) {
   return Uint8List.fromList(img.encodeJpg(resized, quality: 92));
 }
 
+Future<Uint8List?> _compressImageInBackground(Uint8List source) async {
+  final previous = _imageDecodeQueue;
+  final turn = Completer<void>();
+  _imageDecodeQueue = turn.future;
+  final queueWait = Stopwatch()..start();
+  await previous;
+  queueWait.stop();
+  final compression = Stopwatch()..start();
+  try {
+    return await compute(_compressImageForCache, source);
+  } finally {
+    compression.stop();
+    try {
+      PerformanceMonitor.instance.recordOperation(
+        'image-decode-compress',
+        compression.elapsed,
+        details: 'inputKB=${(source.length / 1024).round()} '
+            'queueWaitMs=${queueWait.elapsedMilliseconds}',
+      );
+      PerformanceMonitor.instance.recordOperation(
+        'image-decode-queue',
+        queueWait.elapsed,
+      );
+    } finally {
+      turn.complete();
+    }
+  }
+}
+
 Future<Uint8List?> _loadCachedImage(String url) {
   return _imageDownloads.putIfAbsent(url, () async {
     try {
@@ -573,8 +608,7 @@ Future<Uint8List?> _loadCachedImage(String url) {
         return null;
       }
 
-      final compressed =
-          await compute(_compressImageForCache, response.bodyBytes);
+      final compressed = await _compressImageInBackground(response.bodyBytes);
       if (compressed == null || compressed.isEmpty) {
         AppLog.instance.log(LogLevel.warn, 'image',
             'unsupported image: ${AppLog.shortUrl(url)}');
@@ -583,6 +617,7 @@ Future<Uint8List?> _loadCachedImage(String url) {
       final temp = File('${file.path}.tmp');
       await temp.writeAsBytes(compressed, flush: true);
       await temp.rename(file.path);
+      _imageCacheBytesSincePrune += compressed.length;
       await _pruneImageCache(dir);
       return compressed;
     } catch (error) {
@@ -600,6 +635,57 @@ Future<Uint8List?> _loadCachedImage(String url) {
 }
 
 Future<void> _pruneImageCache(Directory dir) async {
+  final inProgress = _imageCachePruning;
+  if (inProgress != null) {
+    await inProgress;
+    return;
+  }
+  if (_imageCacheBytesSincePrune < _imageCachePruneByteInterval &&
+      DateTime.now().difference(_lastImageCachePrune) <
+          const Duration(minutes: 1)) {
+    return;
+  }
+
+  final bytesAtStart = _imageCacheBytesSincePrune;
+  final pruning = _pruneImageCacheContents(dir);
+  _imageCachePruning = pruning;
+  try {
+    await pruning;
+  } finally {
+    _lastImageCachePrune = DateTime.now();
+    if (_imageCacheBytesSincePrune <= bytesAtStart) {
+      _imageCacheBytesSincePrune = 0;
+    } else {
+      _imageCacheBytesSincePrune -= bytesAtStart;
+    }
+    _imageCachePruning = null;
+  }
+}
+
+Future<void> _pruneImageCacheContents(Directory dir) async {
+  final stopwatch = Stopwatch()..start();
+  try {
+    final path = dir.path;
+    await Isolate.run(() => _pruneImageCacheContentsImpl(path));
+  } catch (error, stack) {
+    AppLog.instance.log(
+      LogLevel.warn,
+      'image',
+      'image cache pruning failed',
+      error: error,
+      stack: stack,
+    );
+  } finally {
+    stopwatch.stop();
+    PerformanceMonitor.instance.recordOperation(
+      'image-cache-prune-io',
+      stopwatch.elapsed,
+    );
+  }
+}
+
+Future<void> _pruneImageCacheContentsImpl(String path) async {
+  final dir = Directory(path);
   final files = <File>[];
   await for (final entry in dir.list(followLinks: false)) {
     if (entry is File && entry.path.endsWith('.jpg')) files.add(entry);

@@ -51,7 +51,7 @@ class AudioService {
   String lastError = '';
   bool _ended = false;
   bool _loaded = false;
-  Duration positionUpdateInterval = const Duration(seconds: 1);
+  Duration positionUpdateInterval = const Duration(milliseconds: 50);
 
   VoidCallback? onEnded;
   void Function(String message)? onError;
