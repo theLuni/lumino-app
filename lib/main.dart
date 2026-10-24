@@ -26,6 +26,8 @@ import 'core/persistence.dart';
 import 'core/performance_monitor.dart';
 import 'core/server_status.dart';
 import 'core/share_links.dart';
+import 'core/windows_efficiency_service.dart';
+import 'core/windows_update_service.dart';
 import 'ui/auth.dart';
 import 'ui/design.dart';
 import 'ui/server_unavailable.dart';
@@ -110,16 +112,16 @@ Future<void> main() async {
     );
     PerformanceMonitor.instance.start();
   }
-  final windowListener = _AppWindowListener();
-  if (_isDesktop) windowManager.addListener(windowListener);
+  if (_isDesktop) windowManager.addListener(_appWindowListener);
 
   runApp(LuminoApp(persistence: persistence));
 
-  if (_isDesktop) unawaited(_startTray(() => _liveState, windowListener));
+  if (_isDesktop) unawaited(_startTray(() => _liveState, _appWindowListener));
 }
 
 /// The player state of the signed-in account. Null while the account screens are shown.
 AppState? _liveState;
+final _AppWindowListener _appWindowListener = _AppWindowListener();
 
 void _configureRestMode() {
   appRestMode
@@ -208,6 +210,7 @@ class _RootView extends StatefulWidget {
 
 class _RootViewState extends State<_RootView> {
   final ServerStatus _status = ServerStatus();
+  final WindowsUpdateService _windowsUpdates = WindowsUpdateService();
   late final AuthService _auth =
       AuthService(status: _status, onToken: _saveToken);
 
@@ -217,6 +220,7 @@ class _RootViewState extends State<_RootView> {
   bool _showAuthSuccess = false;
   bool _startupPending = false; // start-up stopped because the server was down
   bool _retrying = false;
+  bool _checkingForUpdates = false;
   Timer? _healthTimer;
   Timer? _startupTimer;
   final AppLinks _appLinks = AppLinks();
@@ -251,6 +255,7 @@ class _RootViewState extends State<_RootView> {
     _status.removeListener(_onStatusChanged);
     _auth.dispose();
     _status.dispose();
+    _windowsUpdates.dispose();
     super.dispose();
   }
 
@@ -417,6 +422,146 @@ class _RootViewState extends State<_RootView> {
         _checking = false;
       });
     }
+    if (Platform.isWindows) unawaited(_checkForUpdates());
+  }
+
+  Future<void> _checkForUpdates({bool manual = false}) async {
+    if (!Platform.isWindows || _checkingForUpdates) return;
+    _checkingForUpdates = true;
+    try {
+      final release = await _windowsUpdates.checkForUpdate();
+      if (!mounted) return;
+      if (release == null) {
+        if (manual) {
+          await _showUpdateMessage(
+            'You already have the latest version of Lumino.',
+          );
+        }
+        return;
+      }
+
+      final install = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: Text('Lumino ${release.version} is available'),
+          content: SizedBox(
+            width: 440,
+            child: SingleChildScrollView(
+              child: Text(
+                release.notes.isEmpty
+                    ? 'Install the latest version now? Lumino will restart when the update is ready.'
+                    : '${release.notes}\n\nInstall the update now? Lumino will restart when it is ready.',
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Later'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Install update'),
+            ),
+          ],
+        ),
+      );
+      if (install == true && mounted) await _installUpdate(release);
+    } catch (error, stack) {
+      AppLog.instance.log(
+        LogLevel.warn,
+        'updates',
+        'Could not check for or install an update',
+        error: error,
+        stack: stack,
+      );
+      if (manual && mounted) {
+        await _showUpdateMessage('Could not check for updates.\n$error');
+      }
+    } finally {
+      _checkingForUpdates = false;
+    }
+  }
+
+  Future<void> _installUpdate(WindowsUpdateRelease release) async {
+    var progressDialogOpen = true;
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const AlertDialog(
+          title: Text('Downloading Lumino update'),
+          content: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 18),
+              Flexible(
+                child: Text(
+                  'The installer will open when the download is complete.',
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    try {
+      final installer = await _windowsUpdates.downloadInstaller(release);
+      if (!mounted) return;
+      await windowManager.setPreventClose(false);
+      _appWindowListener.quitting = true;
+      try {
+        await Process.start(
+          installer.path,
+          const [
+            '/CLOSEAPPLICATIONS',
+            '/RESTARTAPPLICATIONS',
+          ],
+          mode: ProcessStartMode.detached,
+          workingDirectory: Directory.systemTemp.path,
+        );
+        await windowManager.close();
+      } catch (_) {
+        _appWindowListener.quitting = false;
+        await windowManager.setPreventClose(true);
+        rethrow;
+      }
+    } catch (error, stack) {
+      AppLog.instance.log(
+        LogLevel.error,
+        'updates',
+        'Could not install the update',
+        error: error,
+        stack: stack,
+      );
+      if (mounted) {
+        if (progressDialogOpen) {
+          Navigator.of(context, rootNavigator: true).pop();
+        }
+        await _showUpdateMessage('Could not install the update.\n$error');
+      }
+    }
+  }
+
+  Future<void> _showUpdateMessage(String message) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Ends the session on this device. Unsent changes are dropped.
@@ -426,6 +571,16 @@ class _RootViewState extends State<_RootView> {
     widget.persistence.discardPending();
     await _auth.logout();
     await widget.persistence.clearSession();
+    try {
+      await WindowsEfficiencyService.setEnabled(false);
+    } on PlatformException catch (error) {
+      AppLog.instance.log(
+        LogLevel.warn,
+        'windows',
+        'Could not disable Windows efficiency mode on sign-out',
+        error: error,
+      );
+    }
     if (state != null) {
       await state.audio.stop();
       state.dispose();
@@ -448,7 +603,11 @@ class _RootViewState extends State<_RootView> {
         onAuthenticated: () => unawaited(_onAuthenticated()),
       );
     } else {
-      content = LuminoShell(state: _state!, onSignOut: signOut);
+      content = LuminoShell(
+        state: _state!,
+        onSignOut: signOut,
+        onCheckForUpdates: () => _checkForUpdates(manual: true),
+      );
     }
     final activeContent = Stack(
       fit: StackFit.expand,
@@ -593,13 +752,22 @@ class _AppWindowListener extends WindowListener {
   bool quitting = false;
 
   @override
-  void onWindowMinimize() => appRestMode.sleep();
+  void onWindowMinimize() {
+    appRestMode.sleep();
+    unawaited(_setEfficiencyMinimized(true));
+  }
 
   @override
-  void onWindowRestore() => appRestMode.wake();
+  void onWindowRestore() {
+    appRestMode.wake();
+    unawaited(_setEfficiencyMinimized(false));
+  }
 
   @override
-  void onWindowFocus() => appRestMode.wake();
+  void onWindowFocus() {
+    appRestMode.wake();
+    unawaited(_setEfficiencyMinimized(false));
+  }
 
   @override
   void onWindowMaximize() => WindowCorners.square.value = true;
@@ -622,10 +790,26 @@ class _AppWindowListener extends WindowListener {
       return;
     }
     appRestMode.sleep();
+    unawaited(_setEfficiencyMinimized(true));
     try {
       await windowManager.hide();
     } catch (error) {
       debugPrint('Could not hide the window: $error');
+    }
+  }
+
+  Future<void> _setEfficiencyMinimized(bool minimized) async {
+    try {
+      await WindowsEfficiencyService.setMinimized(minimized);
+    } on PlatformException catch (error) {
+      AppLog.instance.log(
+        LogLevel.warn,
+        'windows',
+        'Could not update Windows efficiency mode',
+        error: error,
+      );
+      _liveState?.showToast(
+          'Windows efficiency mode could not be changed: ${error.message ?? error.code}');
     }
   }
 }

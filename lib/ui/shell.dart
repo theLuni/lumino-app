@@ -20,9 +20,15 @@ import 'pages.dart';
 import 'queue_panel.dart';
 
 class LuminoShell extends StatefulWidget {
-  const LuminoShell({super.key, required this.state, required this.onSignOut});
+  const LuminoShell({
+    super.key,
+    required this.state,
+    required this.onSignOut,
+    required this.onCheckForUpdates,
+  });
   final AppState state;
   final Future<void> Function() onSignOut;
+  final Future<void> Function() onCheckForUpdates;
 
   @override
   State<LuminoShell> createState() => _LuminoShellState();
@@ -185,6 +191,7 @@ class _LuminoShellState extends State<LuminoShell> with WindowListener {
           black: black,
           light: light,
           onSignOut: widget.onSignOut,
+          onCheckForUpdates: widget.onCheckForUpdates,
           desktop: _desktop),
     );
     Widget stack = Stack(children: [
@@ -262,12 +269,14 @@ class _ShellContent extends StatelessWidget {
       required this.black,
       required this.light,
       required this.onSignOut,
+      required this.onCheckForUpdates,
       required this.desktop});
 
   final AppState state;
   final bool black;
   final bool light;
   final Future<void> Function() onSignOut;
+  final Future<void> Function() onCheckForUpdates;
   final bool desktop;
 
   @override
@@ -293,6 +302,7 @@ class _ShellContent extends StatelessWidget {
                         state: state,
                         light: light,
                         onSignOut: onSignOut,
+                        onCheckForUpdates: onCheckForUpdates,
                         desktop: desktop)),
                 if (state.current != null) ...[
                   const SizedBox(height: 8),
@@ -323,6 +333,7 @@ class _ShellContent extends StatelessWidget {
                           state: state,
                           light: light,
                           onSignOut: onSignOut,
+                          onCheckForUpdates: onCheckForUpdates,
                           desktop: desktop)),
                   const SizedBox(height: 6),
                   _PlayerBar(state: state),
@@ -880,10 +891,12 @@ class _MainPanel extends StatefulWidget {
       {required this.state,
       required this.light,
       required this.onSignOut,
+      required this.onCheckForUpdates,
       required this.desktop});
   final AppState state;
   final bool light;
   final Future<void> Function() onSignOut;
+  final Future<void> Function() onCheckForUpdates;
   final bool desktop;
 
   @override
@@ -931,7 +944,11 @@ class _MainPanelState extends State<_MainPanel> {
                   padding: EdgeInsets.only(top: mobile ? 44 : 50),
                   child: AnimatedSwitcher(
                     duration: const Duration(milliseconds: 280),
-                    child: buildPage(state, onSignOut: widget.onSignOut),
+                    child: buildPage(
+                      state,
+                      onSignOut: widget.onSignOut,
+                      onCheckForUpdates: widget.onCheckForUpdates,
+                    ),
                   ),
                 )
               : SingleChildScrollView(
@@ -956,7 +973,11 @@ class _MainPanelState extends State<_MainPanel> {
                         child: child,
                       ),
                     ),
-                    child: buildPage(state, onSignOut: widget.onSignOut),
+                    child: buildPage(
+                      state,
+                      onSignOut: widget.onSignOut,
+                      onCheckForUpdates: widget.onCheckForUpdates,
+                    ),
                   ),
                 ),
         ),

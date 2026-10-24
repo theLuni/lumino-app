@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import 'audio_service.dart';
 import 'auth_service.dart';
@@ -14,6 +15,7 @@ import 'node_service.dart';
 import 'persistence.dart';
 import 'performance_monitor.dart';
 import 'utils.dart';
+import 'windows_efficiency_service.dart';
 
 class PageRef {
   const PageRef(this.name, this.arg);
@@ -239,6 +241,14 @@ class AppState extends ChangeNotifier {
     if (saved['settings'] is Map) {
       settings = AppSettings.fromJson(asMap(saved['settings']));
     }
+    if (settings.windowsEfficiencyMode) {
+      try {
+        await WindowsEfficiencyService.setEnabled(true);
+      } on PlatformException catch (error) {
+        showToast(
+            'Windows efficiency mode could not be enabled: ${error.message ?? error.code}');
+      }
+    }
     if (saved['settings'] is Map) {
       final eq = asMap(asMap(saved['settings'])['eq']);
       if (eq['preset'] is String) settings.eq.preset = eq['preset'].toString();
@@ -390,6 +400,7 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> resetAll() async {
+    await WindowsEfficiencyService.setEnabled(false);
     await persistence.deleteState();
     await audio.stop();
     _invalidateDailyMixes();
@@ -1852,6 +1863,19 @@ class AppState extends ChangeNotifier {
 
   void setFullscreenArtworkVisible(bool enabled) {
     settings.showFullscreenArtwork = enabled;
+    save();
+    notifyListeners();
+  }
+
+  Future<void> setWindowsEfficiencyMode(bool enabled) async {
+    try {
+      await WindowsEfficiencyService.setEnabled(enabled);
+    } on PlatformException catch (error) {
+      showToast(
+          'Windows efficiency mode could not be changed: ${error.message ?? error.code}');
+      return;
+    }
+    settings.windowsEfficiencyMode = enabled;
     save();
     notifyListeners();
   }

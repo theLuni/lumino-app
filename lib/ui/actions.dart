@@ -9,6 +9,127 @@ import 'design.dart';
 
 /// Shared context-menu and playlist actions used by the whole UI.
 
+class _TrackShareCountdownButton extends StatelessWidget {
+  const _TrackShareCountdownButton({
+    super.key,
+    required this.onTap,
+    required this.onComplete,
+    required this.label,
+  });
+
+  final VoidCallback? onTap;
+  final VoidCallback onComplete;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: const Duration(seconds: 4),
+        onEnd: onComplete,
+        builder: (context, progress, _) => SizedBox(
+          width: 76,
+          height: 34,
+          child: GestureDetector(
+            onTap: onTap,
+            child: CustomPaint(
+              foregroundPainter: _TrackShareCountdownPainter(progress),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Color(0xFF050506),
+                  borderRadius: BorderRadius.all(Radius.circular(9)),
+                ),
+                child: Center(
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+}
+
+class _TrackShareCountdownPainter extends CustomPainter {
+  const _TrackShareCountdownPainter(this.progress);
+
+  final double progress;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Rect.fromLTWH(1, 1, size.width - 2, size.height - 2);
+    final path = Path()
+      ..addRRect(RRect.fromRectAndRadius(rect, const Radius.circular(9)));
+    final metric = path.computeMetrics().first;
+    canvas.drawPath(
+      metric.extractPath(0, metric.length * progress),
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.round,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _TrackShareCountdownPainter oldDelegate) =>
+      oldDelegate.progress != progress;
+}
+
+Widget _shareChatAction({
+  required String chatId,
+  required int? messageId,
+  required bool sending,
+  required bool canceling,
+  required bool completed,
+  required Future<void> Function() onSend,
+  required Future<void> Function() onCancel,
+  required VoidCallback onComplete,
+}) {
+  if (messageId != null) {
+    return _TrackShareCountdownButton(
+      key: ValueKey('share-$chatId-$messageId'),
+      label: canceling ? 'Canceling…' : 'Cancel',
+      onTap: canceling ? null : onCancel,
+      onComplete: onComplete,
+    );
+  }
+  if (completed) {
+    return const SizedBox(
+      width: 76,
+      height: 34,
+      child: Center(
+        child: Text(
+          'Sent',
+          style: TextStyle(color: kMuted, fontSize: 12),
+        ),
+      ),
+    );
+  }
+  return SizedBox(
+    width: 76,
+    height: 34,
+    child: FilledButton(
+      onPressed: sending ? null : onSend,
+      style: FilledButton.styleFrom(
+        padding: EdgeInsets.zero,
+        backgroundColor: Colors.white,
+        foregroundColor: const Color(0xFF17171B),
+        disabledBackgroundColor: const Color(0xFF34343D),
+        disabledForegroundColor: Colors.white70,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(9)),
+      ),
+      child: Text(sending ? 'Sending…' : 'Send',
+          style: const TextStyle(fontSize: 12)),
+    ),
+  );
+}
+
 Future<void> shareTrackInChat(
     BuildContext context, AppState state, Track track) async {
   if (!context.mounted) return;
@@ -109,6 +230,19 @@ Future<void> showShareDialog(
     chats = [];
   }
   if (!context.mounted) return;
+
+  if (track != null) {
+    final shared = await _showTrackShareSheet(
+      context,
+      state,
+      chats: chats,
+      track: track,
+      uri: shareUri,
+      title: title,
+    );
+    if (shared == true) state.showToast('Shared in chat');
+    return;
+  }
 
   final chat = await showGlassDialog<Map<String, dynamic>>(
     context,
@@ -280,6 +414,325 @@ Future<void> showShareDialog(
   } catch (error) {
     state.showToast('Could not share: $error');
   }
+}
+
+Future<bool?> _showTrackShareSheet(
+  BuildContext context,
+  AppState state, {
+  required List<Map<String, dynamic>> chats,
+  required Track track,
+  required Uri uri,
+  required String title,
+}) {
+  return showModalBottomSheet<bool>(
+    context: context,
+    isScrollControlled: true,
+    isDismissible: false,
+    enableDrag: false,
+    useSafeArea: true,
+    backgroundColor: Colors.transparent,
+    barrierColor: const Color(0x80000000),
+    builder: (sheetContext) {
+      var query = '';
+      final sentMessageIds = <String, int>{};
+      final sendingChats = <String>{};
+      final cancelingChats = <String>{};
+      final completedChats = <String>{};
+      final expiredUndoChats = <String>{};
+      final chatErrors = <String, String>{};
+      var sharedAny = false;
+
+      return StatefulBuilder(
+        builder: (context, updateSheet) {
+          final hasPendingUndo = sentMessageIds.isNotEmpty;
+          final isBusy = sendingChats.isNotEmpty || cancelingChats.isNotEmpty;
+          final needle = query.trim().toLowerCase();
+          final matches = chats
+              .where((chat) {
+                final peer = chat['peer'];
+                final username =
+                    peer is Map ? (peer['username'] ?? '').toString() : '';
+                final name = peer is Map
+                    ? (peer['display_name'] ??
+                            (username.isNotEmpty ? username : 'Chat'))
+                        .toString()
+                    : (chat['name'] ?? 'Chat').toString();
+                return needle.isEmpty ||
+                    name.toLowerCase().contains(needle) ||
+                    username.toLowerCase().contains(needle);
+              })
+              .take(8)
+              .toList();
+
+          return Align(
+            alignment: Alignment.bottomCenter,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: 560,
+                maxHeight: MediaQuery.sizeOf(context).height * 0.82,
+              ),
+              child: Container(
+                width: double.infinity,
+                padding: EdgeInsets.fromLTRB(
+                  20,
+                  14,
+                  20,
+                  18 + MediaQuery.viewInsetsOf(context).bottom,
+                ),
+                decoration: const BoxDecoration(
+                  color: Color(0xFF17171B),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 38,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: const Color(0x66FFFFFF),
+                          borderRadius: BorderRadius.circular(99),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(children: [
+                      Expanded(
+                        child: Text(title,
+                            style: const TextStyle(
+                                fontSize: 20, fontWeight: FontWeight.w700)),
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: isBusy || hasPendingUndo
+                            ? null
+                            : () => Navigator.of(sheetContext).pop(sharedAny),
+                        icon: const LIcon('close', size: 18),
+                      ),
+                    ]),
+                    Row(children: [
+                      CoverArt(
+                        track: track,
+                        size: 52,
+                        radius: 9,
+                        openArtwork: false,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(track.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w700)),
+                            const SizedBox(height: 4),
+                            Text(track.artists.join(', '),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontSize: 12, color: kMuted)),
+                          ],
+                        ),
+                      ),
+                    ]),
+                    const SizedBox(height: 14),
+                    TextField(
+                      enabled: !hasPendingUndo && !isBusy,
+                      onChanged: (value) => updateSheet(() => query = value),
+                      decoration: const InputDecoration(
+                        hintText: 'Search chats',
+                        prefixIcon: Padding(
+                          padding: EdgeInsets.all(12),
+                          child: LIcon('search', size: 18),
+                        ),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Flexible(
+                      child: matches.isEmpty
+                          ? const Center(
+                              child: Padding(
+                                padding: EdgeInsets.all(18),
+                                child: Text('No chats found'),
+                              ),
+                            )
+                          : ListView.builder(
+                              shrinkWrap: true,
+                              itemCount: matches.length,
+                              itemBuilder: (context, index) {
+                                final chat = matches[index];
+                                final chatId = (chat['id'] ?? '').toString();
+                                final peer = chat['peer'];
+                                final username = peer is Map
+                                    ? (peer['username'] ?? '').toString()
+                                    : '';
+                                final name = peer is Map
+                                    ? (peer['display_name'] ??
+                                            (username.isNotEmpty
+                                                ? username
+                                                : 'Chat'))
+                                        .toString()
+                                    : (chat['name'] ?? 'Chat').toString();
+                                final avatar = peer is Map
+                                    ? (peer['avatar'] ?? '').toString()
+                                    : '';
+                                return ListTile(
+                                  dense: true,
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12)),
+                                  leading: CircleAvatar(
+                                    radius: 21,
+                                    backgroundColor: const Color(0xFF34343D),
+                                    child: ClipOval(
+                                      child: avatar.isEmpty
+                                          ? const LIcon('chats', size: 18)
+                                          : SizedBox.expand(
+                                              child: imageWidget(
+                                                avatar,
+                                                fit: BoxFit.cover,
+                                              ),
+                                            ),
+                                    ),
+                                  ),
+                                  title: Text(name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis),
+                                  subtitle: chatErrors[chatId] != null
+                                      ? Text(
+                                          chatErrors[chatId]!,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              color: Color(0xFFFF7B7B)),
+                                        )
+                                      : username.isEmpty
+                                          ? null
+                                          : Text('@$username'),
+                                  trailing: _shareChatAction(
+                                    chatId: chatId,
+                                    messageId: sentMessageIds[chatId],
+                                    sending: sendingChats.contains(chatId),
+                                    canceling: cancelingChats.contains(chatId),
+                                    completed: completedChats.contains(chatId),
+                                    onSend: () async {
+                                      if (chatId.isEmpty) {
+                                        updateSheet(() {
+                                          chatErrors[chatId] =
+                                              'Chat id is missing.';
+                                        });
+                                        return;
+                                      }
+                                      updateSheet(() {
+                                        sendingChats.add(chatId);
+                                        completedChats.remove(chatId);
+                                        chatErrors.remove(chatId);
+                                      });
+                                      try {
+                                        final id = await state.auth
+                                            .sendChatMessageWithId(
+                                          chatId,
+                                          text: uri.toString(),
+                                          track: {
+                                            'id': track.id,
+                                            'title': track.title,
+                                            'artists': track.artists,
+                                            'album': track.album,
+                                            'cover': track.cover,
+                                            'duration': track.duration,
+                                            'releaseType': track.releaseType,
+                                          },
+                                        );
+                                        if (!sheetContext.mounted) return;
+                                        updateSheet(() {
+                                          sendingChats.remove(chatId);
+                                          sentMessageIds[chatId] = id;
+                                          sharedAny = true;
+                                        });
+                                      } catch (exception) {
+                                        if (!sheetContext.mounted) return;
+                                        updateSheet(() {
+                                          sendingChats.remove(chatId);
+                                          chatErrors[chatId] =
+                                              'Could not share: $exception';
+                                        });
+                                      }
+                                    },
+                                    onCancel: () async {
+                                      final id = sentMessageIds[chatId];
+                                      if (id == null) return;
+                                      updateSheet(() {
+                                        cancelingChats.add(chatId);
+                                        chatErrors.remove(chatId);
+                                      });
+                                      try {
+                                        await state.auth
+                                            .deleteChatMessage(chatId, id);
+                                        if (!sheetContext.mounted) return;
+                                        updateSheet(() {
+                                          sentMessageIds.remove(chatId);
+                                          cancelingChats.remove(chatId);
+                                          completedChats.remove(chatId);
+                                          expiredUndoChats.remove(chatId);
+                                        });
+                                      } catch (exception) {
+                                        if (!sheetContext.mounted) return;
+                                        updateSheet(() {
+                                          cancelingChats.remove(chatId);
+                                          chatErrors[chatId] =
+                                              'Could not cancel: $exception';
+                                          if (expiredUndoChats.remove(chatId)) {
+                                            sentMessageIds.remove(chatId);
+                                            completedChats.add(chatId);
+                                          }
+                                        });
+                                      }
+                                    },
+                                    onComplete: () {
+                                      if (sentMessageIds.containsKey(chatId) &&
+                                          sheetContext.mounted) {
+                                        updateSheet(() {
+                                          if (cancelingChats.contains(chatId)) {
+                                            expiredUndoChats.add(chatId);
+                                          } else {
+                                            sentMessageIds.remove(chatId);
+                                            completedChats.add(chatId);
+                                          }
+                                        });
+                                      }
+                                    },
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                    Center(
+                      child: TextButton(
+                        onPressed: isBusy || hasPendingUndo
+                            ? null
+                            : () async {
+                                await Clipboard.setData(
+                                    ClipboardData(text: uri.toString()));
+                                if (sheetContext.mounted) {
+                                  Navigator.of(sheetContext).pop(sharedAny);
+                                }
+                              },
+                        child: const Text('Copy link'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
 }
 
 Future<void> openTrackRelease(AppState state, Track track) async {

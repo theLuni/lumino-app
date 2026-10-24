@@ -37,7 +37,11 @@ String pageIdentity(AppState state) {
   return state.pageName;
 }
 
-Widget buildPage(AppState state, {required Future<void> Function() onSignOut}) {
+Widget buildPage(
+  AppState state, {
+  required Future<void> Function() onSignOut,
+  required Future<void> Function() onCheckForUpdates,
+}) {
   switch (state.pageName) {
     case 'home':
       return HomePage(key: const ValueKey('home'), state: state);
@@ -55,7 +59,11 @@ Widget buildPage(AppState state, {required Future<void> Function() onSignOut}) {
       return LibraryPage(key: const ValueKey('library'), state: state);
     case 'settings':
       return SettingsPage(
-          key: const ValueKey('settings'), state: state, onSignOut: onSignOut);
+        key: const ValueKey('settings'),
+        state: state,
+        onSignOut: onSignOut,
+        onCheckForUpdates: onCheckForUpdates,
+      );
     case 'liked':
       return LikedPage(key: const ValueKey('liked'), state: state);
     case 'profile':

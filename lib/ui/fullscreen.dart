@@ -12,6 +12,14 @@ import '../core/utils.dart';
 import 'actions.dart';
 import 'design.dart';
 
+const _lyricTextShadows = [
+  Shadow(
+    color: Color(0xCC000000),
+    blurRadius: 8,
+    offset: Offset(0, 2),
+  ),
+];
+
 class FullscreenPlayer extends StatefulWidget {
   const FullscreenPlayer({super.key, required this.state});
   final AppState state;
@@ -783,7 +791,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           child: AnimatedDefaultTextStyle(
             duration: const Duration(milliseconds: 180),
-            style: style,
+            style: style.copyWith(shadows: _lyricTextShadows),
             child: child ?? Text(line.text),
           ),
         ),
@@ -845,20 +853,33 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
   }
 
   Widget _highlightedLyricLine(String text, TextStyle style, double fill) {
-    return ShaderMask(
-      blendMode: BlendMode.srcIn,
-      shaderCallback: (bounds) => LinearGradient(
-        begin: Alignment.centerLeft,
-        end: Alignment.centerRight,
-        stops: [0, fill, fill, 1],
-        colors: const [
-          Colors.white,
-          Colors.white,
-          Color(0x6BFFFFFF),
-          Color(0x6BFFFFFF)
-        ],
-      ).createShader(Rect.fromLTWH(0, 0, bounds.width, bounds.height)),
-      child: Text(text, style: style, softWrap: false),
+    return Stack(
+      children: [
+        Text(
+          text,
+          style: style.copyWith(color: Colors.transparent),
+          softWrap: false,
+        ),
+        ShaderMask(
+          blendMode: BlendMode.srcIn,
+          shaderCallback: (bounds) => LinearGradient(
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
+            stops: [0, fill, fill, 1],
+            colors: const [
+              Colors.white,
+              Colors.white,
+              Color(0x6BFFFFFF),
+              Color(0x6BFFFFFF)
+            ],
+          ).createShader(Rect.fromLTWH(0, 0, bounds.width, bounds.height)),
+          child: Text(
+            text,
+            style: style.copyWith(shadows: const []),
+            softWrap: false,
+          ),
+        ),
+      ],
     );
   }
 

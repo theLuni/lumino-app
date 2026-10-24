@@ -273,12 +273,32 @@ class AuthService {
     String image = '',
     Map<String, dynamic>? track,
   }) async {
-    await _post('/api/chat/send', {
+    await sendChatMessageWithId(
+      chatId,
+      text: text,
+      image: image,
+      track: track,
+    );
+  }
+
+  Future<int> sendChatMessageWithId(
+    String chatId, {
+    String text = '',
+    String image = '',
+    Map<String, dynamic>? track,
+  }) async {
+    final data = await _post('/api/chat/send', {
       'chat_id': chatId,
       'text': text,
       if (image.isNotEmpty) 'image': image,
       if (track != null) 'track': track,
     });
+    final id = data['id'];
+    if (id is! num || id < 1) {
+      throw const FormatException(
+          'Chat send response did not include a message ID.');
+    }
+    return id.toInt();
   }
 
   Future<void> setChatTyping(String chatId, bool isTyping) async {

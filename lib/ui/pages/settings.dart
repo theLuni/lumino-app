@@ -28,9 +28,15 @@ const List<int> eqFrequencies = [
 String eqFreqLabel(int hz) => hz >= 1000 ? '${hz ~/ 1000}K' : '$hz';
 
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key, required this.state, required this.onSignOut});
+  const SettingsPage({
+    super.key,
+    required this.state,
+    required this.onSignOut,
+    required this.onCheckForUpdates,
+  });
   final AppState state;
   final Future<void> Function() onSignOut;
+  final Future<void> Function() onCheckForUpdates;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -38,6 +44,7 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   bool _refreshingServer = false;
+  bool _checkingForUpdates = false;
 
   @override
   Widget build(BuildContext context) {
@@ -144,17 +151,35 @@ class _SettingsPageState extends State<SettingsPage> {
                     hasBody: false,
                     child: const SizedBox.shrink(),
                   )),
+              if (Platform.isWindows)
+                Reveal(
+                    index: 4,
+                    child: _SetCard(
+                      icon: 'bolt',
+                      title: 'Windows efficiency mode',
+                      subtitle:
+                          'Reduce power use while Lumino is minimized or hidden in the tray.',
+                      trailing: SwitchPill(
+                        value: state.settings.windowsEfficiencyMode,
+                        onTap: () async {
+                          await state.setWindowsEfficiencyMode(
+                              !state.settings.windowsEfficiencyMode);
+                        },
+                      ),
+                      hasBody: false,
+                      child: const SizedBox.shrink(),
+                    )),
               Reveal(
-                  index: 4,
+                  index: 5,
                   child: _SetCard(
                     icon: 'volume',
                     title: 'Streaming quality',
                     subtitle: 'Higher quality uses more data.',
                     child: _QualitySeg(state: state),
                   )),
-              Reveal(index: 5, child: _EqCard(state: state)),
+              Reveal(index: 6, child: _EqCard(state: state)),
               Reveal(
-                  index: 6,
+                  index: 7,
                   child: _SetCard(
                     icon: 'bolt',
                     title: 'Server',
@@ -180,7 +205,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     child: _ServerList(state: state),
                   )),
               Reveal(
-                  index: 6,
+                  index: 8,
                   child: _SetCard(
                     icon: 'folderPlus',
                     title: 'Import music',
@@ -193,8 +218,37 @@ class _SettingsPageState extends State<SettingsPage> {
                     hasBody: false,
                     child: const SizedBox.shrink(),
                   )),
+              if (Platform.isWindows)
+                Reveal(
+                    index: 9,
+                    child: _SetCard(
+                      icon: 'restore',
+                      title: 'Updates',
+                      subtitle:
+                          'Check GitHub for the latest Windows version and install it.',
+                      trailing: ChipButton(
+                        label: _checkingForUpdates ? 'Checking…' : 'Check now',
+                        icon: _checkingForUpdates ? null : 'restore',
+                        ghost: true,
+                        height: 30,
+                        onTap: _checkingForUpdates
+                            ? null
+                            : () async {
+                                setState(() => _checkingForUpdates = true);
+                                try {
+                                  await widget.onCheckForUpdates();
+                                } finally {
+                                  if (mounted) {
+                                    setState(() => _checkingForUpdates = false);
+                                  }
+                                }
+                              },
+                      ),
+                      hasBody: false,
+                      child: const SizedBox.shrink(),
+                    )),
               Reveal(
-                  index: 7,
+                  index: 10,
                   child: _SetCard(
                     icon: 'user',
                     title: 'Account',

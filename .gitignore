@@ -1,6 +1,7 @@
 .dart_tool/
 .packages
 build/
+release_output/
 .flutter-plugins
 .flutter-plugins-dependencies
 *.iml

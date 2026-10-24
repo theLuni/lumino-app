@@ -504,6 +504,7 @@ class AppSettings {
   bool openArtwork = true;
   bool blurFullscreenArtwork = true;
   bool showFullscreenArtwork = true;
+  bool windowsEfficiencyMode = false;
   EqSettings eq = EqSettings();
 
   AppSettings();
@@ -525,6 +526,9 @@ class AppSettings {
     if (raw['showFullscreenArtwork'] is bool) {
       settings.showFullscreenArtwork = raw['showFullscreenArtwork'] as bool;
     }
+    if (raw['windowsEfficiencyMode'] is bool) {
+      settings.windowsEfficiencyMode = raw['windowsEfficiencyMode'] as bool;
+    }
     settings.eq = EqSettings.fromJson(asMap(raw['eq']));
     return settings;
   }
@@ -535,6 +539,7 @@ class AppSettings {
         'openArtwork': openArtwork,
         'blurFullscreenArtwork': blurFullscreenArtwork,
         'showFullscreenArtwork': showFullscreenArtwork,
+        'windowsEfficiencyMode': windowsEfficiencyMode,
         'eq': eq.toJson()
       };
 
@@ -545,6 +550,7 @@ class AppSettings {
       ..openArtwork = openArtwork
       ..blurFullscreenArtwork = blurFullscreenArtwork
       ..showFullscreenArtwork = showFullscreenArtwork
+      ..windowsEfficiencyMode = windowsEfficiencyMode
       ..eq = eq.copy();
     return settings;
   }
