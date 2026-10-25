@@ -1,6 +1,6 @@
 ﻿
 #define MyAppName "Lumino"
-#define MyAppVersion "0.3.2"
+#define MyAppVersion "0.3.4"
 #define MyAppExeName "lumino.exe"
 #define MyAppPublisher "Lumino Industries"
 
