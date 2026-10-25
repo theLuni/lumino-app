@@ -46,31 +46,6 @@ Lumino is a music player focused on a calm, immersive listening experience. Brow
 
 Get the latest Windows installer from **[GitHub Releases](https://github.com/theLuni/lumino/releases/latest)**.
 
-## Run from source
-
-You’ll need Flutter 3.27 or newer and the Windows desktop development tools configured for Flutter.
-
-```powershell
-git clone https://github.com/theLuni/lumino-app.git
-cd lumino-app
-flutter pub get
-flutter run -d windows
-```
-
-To build a Windows release bundle:
-
-```powershell
-flutter build windows --release
-```
-
-On Windows, run [`build_release.bat`](build_release.bat) to set the app version, build Debug and Release, create the Inno Setup installer, and generate a `version.txt` report in `release_output`.
-
-## Keep a local working copy private
-
-Run [`make_private_copy.bat`](make_private_copy.bat) on Windows to create an editable copy at `%USERPROFILE%\LuminoPrivateSource`. Its Windows permissions allow your account, SYSTEM, and local administrators to access the files. The copy excludes Git history, generated builds, and the separate `server` directory.
-
-This protects the local folder from standard accounts on the same PC; it does not protect source code if you share or publish the files, and administrators can take ownership.
-
 ## Built with
 
 [Flutter](https://flutter.dev/) · [Dart](https://dart.dev/) · [media_kit](https://pub.dev/packages/media_kit)
