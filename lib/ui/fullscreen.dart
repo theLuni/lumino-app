@@ -40,9 +40,12 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
   DateTime _userScrollUntil = DateTime.fromMillisecondsSinceEpoch(0);
   bool _showLikeBurst = false;
   bool _showLikeDim = false;
+  bool _showDislikeBurst = false;
+  bool _dislikeSkipPending = false;
   bool _addingToPlaylist = false;
   bool _playlistAdded = false;
   Timer? _likeBurstTimer;
+  Timer? _dislikeSkipTimer;
   Timer? _playlistAddedTimer;
 
   @override
@@ -62,6 +65,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
   void dispose() {
     widget.state.audio.positionNotifier.removeListener(_tick);
     _likeBurstTimer?.cancel();
+    _dislikeSkipTimer?.cancel();
     _playlistAddedTimer?.cancel();
     _scroll.dispose();
     super.dispose();
@@ -74,15 +78,47 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
     if (track == null) return;
     if (!widget.state.fullScreen) return;
     if (_loadedKey == track.key) return;
+    _dislikeSkipTimer?.cancel();
+    _dislikeSkipPending = false;
     _loadedKey = track.key;
     _lyrics = null;
     _variant = 0;
     _active = -1;
     _showLikeBurst = false;
     _showLikeDim = false;
+    _showDislikeBurst = false;
     _playlistAdded = false;
     _lineKeys.clear();
     _load(track);
+  }
+
+  void _dislikeAndSkip(Track track) {
+    final state = widget.state;
+    if (_dislikeSkipPending) return;
+    final disliked = state.disliked.contains(track.key);
+    state.toggleDislike(track);
+    if (disliked) return;
+
+    setState(() {
+      _dislikeSkipPending = true;
+      _showLikeBurst = true;
+      _showLikeDim = true;
+      _showDislikeBurst = true;
+    });
+    _likeBurstTimer?.cancel();
+    _dislikeSkipTimer?.cancel();
+    _dislikeSkipTimer = Timer(const Duration(milliseconds: 450), () {
+      if (!mounted) return;
+      setState(() {
+        _dislikeSkipPending = false;
+        _showLikeBurst = false;
+        _showLikeDim = false;
+        _showDislikeBurst = false;
+      });
+      if (state.current?.key == track.key) {
+        unawaited(state.next());
+      }
+    });
   }
 
   Future<void> _load(Track track) async {
@@ -398,6 +434,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
   Widget _left(Track track, double availableHeight) {
     final state = widget.state;
     final liked = state.liked.contains(track.key);
+    final disliked = state.disliked.contains(track.key);
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -406,6 +443,7 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
           // size a fixed 280px cover overflowed the column.
           final coverSize =
               (availableHeight - 262).clamp(96.0, 280.0).toDouble();
+          final actionSize = math.min(30.0, (coverSize - 8) / 4);
           return Container(
             width: coverSize,
             height: coverSize,
@@ -445,110 +483,136 @@ class _FullscreenPlayerState extends State<FullscreenPlayer> {
                         scale: scale,
                         child: child,
                       ),
-                      child: const LIcon('heart',
-                          size: 68, color: Colors.white, filled: true),
+                      child: LIcon(
+                        _showDislikeBurst ? 'thumbDown' : 'heart',
+                        size: 68,
+                        color: Colors.white,
+                        filled: true,
+                      ),
                     ),
                   ),
                 Positioned(
-                  left: 8,
-                  bottom: 8,
-                  child: IconAction(
-                    icon: 'heart',
-                    size: 30,
-                    iconSize: 14,
-                    filled: liked,
-                    active: liked,
-                    animateOnTap: true,
-                    tooltip: liked
-                        ? 'Remove from Liked Songs'
-                        : 'Add to Liked Songs',
-                    onTap: () {
-                      if (!liked) {
-                        setState(() {
-                          _showLikeBurst = true;
-                          _showLikeDim = true;
-                        });
-                        _likeBurstTimer?.cancel();
-                        _likeBurstTimer = Timer(
-                          const Duration(milliseconds: 850),
-                          () {
-                            if (mounted) {
-                              setState(() {
-                                _showLikeBurst = false;
-                                _showLikeDim = false;
-                              });
-                            }
-                          },
-                        );
-                      } else {
-                        setState(() {
-                          _showLikeBurst = false;
-                          _showLikeDim = false;
-                        });
-                      }
-                      state.toggleLike(track);
-                    },
-                  ),
-                ),
-                Positioned(
-                  right: 8,
-                  bottom: 8,
-                  child: IconAction(
-                    icon: 'share',
-                    size: 30,
-                    iconSize: 14,
-                    tooltip: 'Share Track',
-                    onTap: () => shareTrackInChat(context, state, track),
-                  ),
-                ),
-                Positioned(
-                  right: 44,
-                  bottom: 8,
-                  child: SizedBox(
-                    width: 30,
-                    height: 30,
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 220),
-                      switchInCurve: Curves.easeOutBack,
-                      switchOutCurve: Curves.easeIn,
-                      transitionBuilder: (child, animation) => ScaleTransition(
-                        scale: animation,
-                        child: FadeTransition(opacity: animation, child: child),
-                      ),
-                      child: IconAction(
-                        key: ValueKey(_playlistAdded),
-                        icon: _playlistAdded ? 'check' : 'plus',
-                        size: 30,
-                        iconSize: 15,
-                        tooltip: _playlistAdded
-                            ? 'Added to Playlist'
-                            : 'Add to Playlist',
-                        onTap: _addingToPlaylist
-                            ? null
-                            : () async {
-                                setState(() => _addingToPlaylist = true);
-                                var added = false;
-                                try {
-                                  added = await showPlaylistPicker(
-                                      context, state, track);
-                                } finally {
-                                  if (mounted) {
-                                    setState(() => _addingToPlaylist = false);
-                                  }
-                                }
-                                if (!mounted || !added) return;
-                                _playlistAddedTimer?.cancel();
-                                setState(() => _playlistAdded = true);
-                                _playlistAddedTimer = Timer(
-                                    const Duration(milliseconds: 1500), () {
-                                  if (mounted) {
-                                    setState(() => _playlistAdded = false);
-                                  }
+                  left: 4,
+                  bottom: 4,
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    IconAction(
+                      icon: 'heart',
+                      size: actionSize,
+                      iconSize: actionSize * 0.52,
+                      filled: liked,
+                      active: liked,
+                      animateOnTap: true,
+                      backgroundColor: const Color(0xB8000000),
+                      hoverBackgroundColor: const Color(0xE0000000),
+                      tooltip: liked
+                          ? 'Remove from Liked Songs'
+                          : 'Add to Liked Songs',
+                      onTap: () {
+                        if (!liked) {
+                          setState(() {
+                            _showLikeBurst = true;
+                            _showLikeDim = true;
+                            _showDislikeBurst = false;
+                          });
+                          _likeBurstTimer?.cancel();
+                          _likeBurstTimer = Timer(
+                            const Duration(milliseconds: 850),
+                            () {
+                              if (mounted) {
+                                setState(() {
+                                  _showLikeBurst = false;
+                                  _showLikeDim = false;
+                                  _showDislikeBurst = false;
                                 });
-                              },
+                              }
+                            },
+                          );
+                        } else {
+                          setState(() {
+                            _showLikeBurst = false;
+                            _showLikeDim = false;
+                            _showDislikeBurst = false;
+                          });
+                        }
+                        state.toggleLike(track);
+                      },
+                    ),
+                    IconAction(
+                      icon: 'thumbDown',
+                      size: actionSize,
+                      iconSize: actionSize * 0.52,
+                      active: disliked,
+                      filled: disliked,
+                      backgroundColor: const Color(0xB8000000),
+                      hoverBackgroundColor: const Color(0xE0000000),
+                      tooltip: disliked ? 'Remove dislike' : 'Dislike',
+                      onTap: () => _dislikeAndSkip(track),
+                    ),
+                  ]),
+                ),
+                Positioned(
+                  right: 4,
+                  bottom: 4,
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    SizedBox(
+                      width: actionSize,
+                      height: actionSize,
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 220),
+                        switchInCurve: Curves.easeOutBack,
+                        switchOutCurve: Curves.easeIn,
+                        transitionBuilder: (child, animation) =>
+                            ScaleTransition(
+                          scale: animation,
+                          child:
+                              FadeTransition(opacity: animation, child: child),
+                        ),
+                        child: IconAction(
+                          key: ValueKey(_playlistAdded),
+                          icon: _playlistAdded ? 'check' : 'plus',
+                          size: actionSize,
+                          iconSize: actionSize * 0.55,
+                          backgroundColor: const Color(0xB8000000),
+                          hoverBackgroundColor: const Color(0xE0000000),
+                          tooltip: _playlistAdded
+                              ? 'Added to Playlist'
+                              : 'Add to Playlist',
+                          onTap: _addingToPlaylist
+                              ? null
+                              : () async {
+                                  setState(() => _addingToPlaylist = true);
+                                  var added = false;
+                                  try {
+                                    added = await showPlaylistPicker(
+                                        context, state, track);
+                                  } finally {
+                                    if (mounted) {
+                                      setState(() => _addingToPlaylist = false);
+                                    }
+                                  }
+                                  if (!mounted || !added) return;
+                                  _playlistAddedTimer?.cancel();
+                                  setState(() => _playlistAdded = true);
+                                  _playlistAddedTimer = Timer(
+                                      const Duration(milliseconds: 1500), () {
+                                    if (mounted) {
+                                      setState(() => _playlistAdded = false);
+                                    }
+                                  });
+                                },
+                        ),
                       ),
                     ),
-                  ),
+                    IconAction(
+                      icon: 'share',
+                      size: actionSize,
+                      iconSize: actionSize * 0.52,
+                      backgroundColor: const Color(0xB8000000),
+                      hoverBackgroundColor: const Color(0xE0000000),
+                      tooltip: 'Share Track',
+                      onTap: () => shareTrackInChat(context, state, track),
+                    ),
+                  ]),
                 ),
               ]),
             ),

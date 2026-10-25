@@ -36,7 +36,7 @@ Lumino is a music player focused on a calm, immersive listening experience. Brow
 
 ## Features
 
-- **A focused player** — playback controls, queue, shuffle, repeat, and a fullscreen listening view.
+- **A focused player** — playback controls, queue, shuffle, repeat, a fullscreen listening view, and Windows media-key controls.
 - **Your music in one place** — home, search, liked songs, playlists, and artist pages.
 - **Personal touches** — dark, light, and black themes, plus configurable fullscreen artwork and blur.
 - **Share and discover** — chat, share tracks, and explore recommendations.
@@ -64,6 +64,12 @@ flutter build windows --release
 ```
 
 On Windows, run [`build_release.bat`](build_release.bat) to set the app version, build Debug and Release, create the Inno Setup installer, and generate a `version.txt` report in `release_output`.
+
+## Keep a local working copy private
+
+Run [`make_private_copy.bat`](make_private_copy.bat) on Windows to create an editable copy at `%USERPROFILE%\LuminoPrivateSource`. Its Windows permissions allow your account, SYSTEM, and local administrators to access the files. The copy excludes Git history, generated builds, and the separate `server` directory.
+
+This protects the local folder from standard accounts on the same PC; it does not protect source code if you share or publish the files, and administrators can take ownership.
 
 ## Built with
 

@@ -427,8 +427,8 @@ Future<bool?> _showTrackShareSheet(
   return showModalBottomSheet<bool>(
     context: context,
     isScrollControlled: true,
-    isDismissible: false,
-    enableDrag: false,
+    isDismissible: true,
+    enableDrag: true,
     useSafeArea: true,
     backgroundColor: Colors.transparent,
     barrierColor: const Color(0x80000000),
@@ -506,9 +506,8 @@ Future<bool?> _showTrackShareSheet(
                       ),
                       IconButton(
                         tooltip: 'Close',
-                        onPressed: isBusy || hasPendingUndo
-                            ? null
-                            : () => Navigator.of(sheetContext).pop(sharedAny),
+                        onPressed: () =>
+                            Navigator.of(sheetContext).pop(sharedAny),
                         icon: const LIcon('close', size: 18),
                       ),
                     ]),

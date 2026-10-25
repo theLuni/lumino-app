@@ -122,6 +122,8 @@ const Map<String, String> kIconPaths = {
   'next': 'M6 5v14l9.5-7z M16.6 5H19v14h-2.4z',
   'heart':
       'M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.2a4.3 4.3 0 0 1 7.5 2.6C19.5 15.4 12 20 12 20z',
+  'thumbDown':
+      'M7 10v10 M9 10V4a2 2 0 0 1 2-2h1l2 7h6a2 2 0 0 1 2 2l-2 7a2 2 0 0 1-2 2H9l-4-4V9z M2 9h3v11H2z',
   'shuffle':
       'M3 17h3c3 0 4-2 5.5-5S15 7 18 7h3 M3 7h3c1.6 0 2.8.7 3.7 1.8 M14.3 15.2c.9 1.1 2.1 1.8 3.7 1.8h3 M19 4.5l2.5 2.5L19 9.5 M19 14.5l2.5 2.5-2.5 2.5',
   'repeat':
@@ -206,18 +208,20 @@ class LIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scope = ThemeScope.of(context);
+    final icon = CustomPaint(
+      painter: _IconPainter(
+        kIconPaths[name] ?? '',
+        color ?? scope.foreground,
+        filled ?? _filledIcons.contains(name),
+        size,
+      ),
+      size: Size(size, size),
+    );
     return SizedBox(
       width: size,
       height: size,
-      child: CustomPaint(
-        painter: _IconPainter(
-          kIconPaths[name] ?? '',
-          color ?? scope.foreground,
-          filled ?? _filledIcons.contains(name),
-          size,
-        ),
-        size: Size(size, size),
-      ),
+      child:
+          name == 'thumbDown' ? Transform.flip(flipY: true, child: icon) : icon,
     );
   }
 }
@@ -1497,6 +1501,8 @@ class IconAction extends StatefulWidget {
     this.tooltip,
     this.filled,
     this.animateOnTap = false,
+    this.backgroundColor = Colors.transparent,
+    this.hoverBackgroundColor,
   });
 
   final String icon;
@@ -1511,6 +1517,8 @@ class IconAction extends StatefulWidget {
   final String? tooltip;
   final bool? filled;
   final bool animateOnTap;
+  final Color backgroundColor;
+  final Color? hoverBackgroundColor;
 
   @override
   State<IconAction> createState() => _IconActionState();
@@ -1561,8 +1569,11 @@ class _IconActionState extends State<IconAction>
             height: widget.size,
             decoration: BoxDecoration(
               color: hovered
-                  ? (light ? const Color(0x12000000) : const Color(0x14FFFFFF))
-                  : Colors.transparent,
+                  ? (widget.hoverBackgroundColor ??
+                      (light
+                          ? const Color(0x12000000)
+                          : const Color(0x14FFFFFF)))
+                  : widget.backgroundColor,
               borderRadius: BorderRadius.circular(widget.borderRadius),
             ),
             child: Stack(
@@ -2568,9 +2579,57 @@ class CardsRow extends StatefulWidget {
 class _CardsRowState extends State<CardsRow> {
   final ScrollController _controller = ScrollController();
   bool _dragging = false;
+  bool _canScrollLeft = false;
+  bool _canScrollRight = false;
+  bool _metricsUpdateScheduled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_updateScrollButtons);
+  }
+
+  void _updateScrollButtons() {
+    if (!_controller.hasClients) return;
+    final position = _controller.position;
+    final canScrollLeft = position.pixels > position.minScrollExtent + 1;
+    final canScrollRight = position.pixels < position.maxScrollExtent - 1;
+    if (canScrollLeft == _canScrollLeft && canScrollRight == _canScrollRight) {
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _canScrollLeft = canScrollLeft;
+        _canScrollRight = canScrollRight;
+      });
+    }
+  }
+
+  bool _onScrollMetrics(ScrollMetricsNotification notification) {
+    if (!_metricsUpdateScheduled) {
+      _metricsUpdateScheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _metricsUpdateScheduled = false;
+        _updateScrollButtons();
+      });
+    }
+    return false;
+  }
+
+  void _scrollBy(double direction) {
+    if (!_controller.hasClients) return;
+    final position = _controller.position;
+    _controller.animateTo(
+      (position.pixels + position.viewportDimension * 0.8 * direction)
+          .clamp(position.minScrollExtent, position.maxScrollExtent),
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOutCubic,
+    );
+  }
 
   @override
   void dispose() {
+    _controller.removeListener(_updateScrollButtons);
     _controller.dispose();
     super.dispose();
   }
@@ -2593,22 +2652,68 @@ class _CardsRowState extends State<CardsRow> {
               PointerDeviceKind.stylus,
             },
           ),
-          child: GestureDetector(
-            onHorizontalDragStart: (_) => setState(() => _dragging = true),
-            onHorizontalDragEnd: (_) => setState(() => _dragging = false),
-            child: SingleChildScrollView(
-              controller: _controller,
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+          child: NotificationListener<ScrollMetricsNotification>(
+            onNotification: _onScrollMetrics,
+            child: GestureDetector(
+              onHorizontalDragStart: (_) => setState(() => _dragging = true),
+              onHorizontalDragEnd: (_) => setState(() => _dragging = false),
+              child: Stack(
                 children: [
-                  for (var i = 0; i < widget.children.length; i++) ...[
-                    if (i > 0) const SizedBox(width: 16),
-                    SizedBox(
-                        width: width,
-                        child: Reveal(index: i, child: widget.children[i])),
-                  ],
+                  SingleChildScrollView(
+                    controller: _controller,
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (var i = 0; i < widget.children.length; i++) ...[
+                          if (i > 0) const SizedBox(width: 16),
+                          SizedBox(
+                              width: width,
+                              child:
+                                  Reveal(index: i, child: widget.children[i])),
+                        ],
+                      ],
+                    ),
+                  ),
+                  Positioned(
+                    left: 4,
+                    top: 0,
+                    bottom: 8,
+                    child: Center(
+                      child: IgnorePointer(
+                        ignoring: !_canScrollLeft,
+                        child: AnimatedOpacity(
+                          opacity: _canScrollLeft ? 1 : 0,
+                          duration: const Duration(milliseconds: 160),
+                          child: _CardsRowArrow(
+                            icon: 'chevL',
+                            tooltip: 'Scroll left',
+                            onTap: () => _scrollBy(-1),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    right: 4,
+                    top: 0,
+                    bottom: 8,
+                    child: Center(
+                      child: IgnorePointer(
+                        ignoring: !_canScrollRight,
+                        child: AnimatedOpacity(
+                          opacity: _canScrollRight ? 1 : 0,
+                          duration: const Duration(milliseconds: 160),
+                          child: _CardsRowArrow(
+                            icon: 'chevR',
+                            tooltip: 'Scroll right',
+                            onTap: () => _scrollBy(1),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -2617,6 +2722,39 @@ class _CardsRowState extends State<CardsRow> {
       );
     });
   }
+}
+
+class _CardsRowArrow extends StatelessWidget {
+  const _CardsRowArrow({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  final String icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xE0141418),
+          shape: BoxShape.circle,
+          border: Border.all(color: const Color(0x33FFFFFF)),
+          boxShadow: const [
+            BoxShadow(color: Color(0x55000000), blurRadius: 10),
+          ],
+        ),
+        child: IconAction(
+          icon: icon,
+          size: 36,
+          iconSize: 18,
+          color: Colors.white,
+          hoverColor: Colors.white,
+          tooltip: tooltip,
+          onTap: onTap,
+        ),
+      );
 }
 
 // ---------------------------------------------------------------------------

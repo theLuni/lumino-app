@@ -1,7 +1,7 @@
 name: lumino
 description: Lumino - desktop music player (Flutter port of the Electron app)
 publish_to: 'none'
-version: 0.3.2+1
+version: 0.3.3+1
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
@@ -12,6 +12,7 @@ dependencies:
     sdk: flutter
   media_kit: ^1.1.11
   media_kit_libs_video: ^1.0.6
+  smtc_windows: ^1.1.0
   window_manager: ^0.4.3
   tray_manager: ^0.2.4
   path_provider: ^2.1.5
@@ -27,6 +28,10 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+
+dependency_overrides:
+  # smtc_windows 1.1.0's generated bindings require an exact runtime match.
+  flutter_rust_bridge: 2.11.1
 
 flutter:
   uses-material-design: false

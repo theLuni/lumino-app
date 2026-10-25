@@ -100,6 +100,7 @@ Future<void> main() async {
   }
 
   MediaKit.ensureInitialized();
+  await AudioService.initializeWindowsMediaSession();
 
   final persistence = Persistence();
   if (kDebugMode) {
@@ -583,6 +584,7 @@ class _RootViewState extends State<_RootView> {
     }
     if (state != null) {
       await state.audio.stop();
+      await state.audio.dispose();
       state.dispose();
       state.node.dispose();
     }

@@ -95,6 +95,9 @@ TIMEOUT = 9
 SESSION_COOKIE = "lumino_session"
 SESSION_TTL = 60 * 60 * 24 * 30
 STATE_MAX = 20 * 1024 * 1024          # предел размера состояния пользователя
+AI_SKIP_DISMISS_THRESHOLD = 3
+AI_RETRAIN_INTERVAL_SECONDS = 15 * 60
+AI_RETRAIN_MIN_NEW_EVENTS = 20
 PBKDF2_ROUNDS = 120_000
 CODE_TTL = 60 * 15
 CODE_RESEND = 60
@@ -186,6 +189,19 @@ CREATE TABLE IF NOT EXISTS user_state (
     user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     data       TEXT NOT NULL,
     updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ai_events_user_id_id
+    ON ai_events(user_id, id);
+CREATE TABLE IF NOT EXISTS ai_models (
+    user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    model_json TEXT NOT NULL,
+    trained_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS private_playlist_shares (
     token_hash  TEXT PRIMARY KEY,
@@ -1377,6 +1393,208 @@ def related_artists(name: str) -> list:
     return names
 
 
+def generate_ai_wave(user_id: int, model: dict, exclude_ids: set[str]) -> list:
+    artist_scores = {
+        item["key"]: {"name": item["name"], "score": float(item["score"])}
+        for item in model.get("artists", [])
+        if isinstance(item, dict) and item.get("key") and item.get("name")
+    }
+    track_scores = dict(model.get("track_scores", {}))
+    skip_counts = {key: int(value)
+                   for key, value in model.get("skip_counts", {}).items()}
+    try:
+        last_event_id = int(model.get("last_event_id") or 0)
+    except (TypeError, ValueError):
+        last_event_id = 0
+
+    state_row = one("SELECT data FROM user_state WHERE user_id = ?", (user_id,))
+    try:
+        user_state = json.loads(state_row["data"]) if state_row else {}
+    except (ValueError, TypeError):
+        user_state = {}
+    if not isinstance(user_state, dict):
+        user_state = {}
+    liked_keys = {norm(key) for key in user_state.get("liked", [])
+                  if isinstance(key, str)}
+    disliked_keys = {norm(key) for key in user_state.get("disliked", [])
+                     if isinstance(key, str)}
+    active_like_artists = set()
+    active_dislike_artists = set()
+    seed_like_ids = set(model.get("liked_seed_track_ids", []))
+    seed_dislike_ids = set(model.get("disliked_seed_track_ids", []))
+    saved_tracks = user_state.get("savedTracks", [])
+    if isinstance(saved_tracks, list):
+        for track in saved_tracks:
+            if not isinstance(track, dict):
+                continue
+            names = track.get("artists", [])
+            primary = str(track.get("primary") or (
+                names[0] if isinstance(names, list) and names else ""))
+            title = str(track.get("title") or "")
+            track_key = norm("%s - %s" % (primary, title))
+            if track_key in liked_keys:
+                if str(track.get("id") or "") not in seed_like_ids:
+                    for name in names if isinstance(names, list) else [primary]:
+                        key = norm(name)
+                        if not key:
+                            continue
+                        active_like_artists.add(key)
+                        item = artist_scores.setdefault(
+                            key, {"name": str(name), "score": 0.0})
+                        item["score"] += 12.0
+                if primary:
+                    active_like_artists.add(norm(primary))
+            if track_key in disliked_keys:
+                if str(track.get("id") or "") not in seed_dislike_ids:
+                    for name in names if isinstance(names, list) else [primary]:
+                        key = norm(name)
+                        if not key:
+                            continue
+                        active_dislike_artists.add(key)
+                        item = artist_scores.setdefault(
+                            key, {"name": str(name), "score": 0.0})
+                        item["score"] -= 18.0
+                if primary:
+                    active_dislike_artists.add(norm(primary))
+
+    fresh_rows = query(
+        "SELECT event_json FROM ai_events WHERE user_id = ? AND id > ? ORDER BY id",
+        (user_id, last_event_id),
+    )
+    live_weights = {
+        "start": 0.05, "progress": 0.8, "complete": 3.0, "skip": 0.0,
+        "seek_forward": -0.1, "seek_back": 0.1, "like": 10.0,
+        "unlike": -15.0, "dislike": -25.0, "undislike": 20.0,
+        "artist_open": 1.8,
+    }
+    for fresh_row in fresh_rows:
+        try:
+            event = json.loads(fresh_row["event_json"])
+        except (ValueError, TypeError):
+            continue
+        kind = event.get("type")
+        weight = live_weights.get(kind, 0.0)
+        track = event.get("track") or {}
+        track_id = str(track.get("id") or "")
+        names = track.get("artists") or []
+        primary = str(names[0] if names else "")
+        track_key = norm("%s - %s" % (primary, track.get("title") or ""))
+        if kind == "dislike" and track_key:
+            disliked_keys.add(track_key)
+        elif kind == "undislike" and track_key:
+            disliked_keys.discard(track_key)
+        if track_id and kind == "skip":
+            skip_counts[track_id] = skip_counts.get(track_id, 0) + 1
+        if track_id and kind in {"progress", "complete", "like", "unlike",
+                                 "dislike", "undislike"}:
+            track_scores[track_id] = track_scores.get(track_id, 0.0) + weight
+        if kind == "artist_open" and event.get("artist"):
+            names = [event["artist"]]
+        for index, name in enumerate(names):
+            key = norm(name)
+            if not key:
+                continue
+            item = artist_scores.setdefault(
+                key, {"name": str(name), "score": 0.0})
+            item["score"] += weight * (1.0 if index == 0 else 0.45)
+
+    seeds = sorted(artist_scores.items(),
+                   key=lambda item: item[1]["score"], reverse=True)
+    seed_names = [item[1]["name"] for item in seeds if item[1]["score"] > 0][:6]
+    if not seed_names:
+        return []
+    similar_names = []
+    with ThreadPoolExecutor(max_workers=min(4, len(seed_names))) as pool:
+        for related in pool.map(related_artists, seed_names[:4]):
+            for name in related:
+                key = norm(name)
+                if key and key not in artist_scores and all(
+                        norm(existing) != key for existing in similar_names):
+                    similar_names.append(name)
+
+    jobs = [(name, False) for name in seed_names]
+    jobs.extend((name, True) for name in similar_names[:8])
+    candidates = {}
+
+    def search_artist(job):
+        name, discovery = job
+        found, _ = search_catalog(name)
+        artist_key = norm(name)
+        matches = []
+        for track in found:
+            track_id = str(track.get("id") or "")
+            names = track.get("artists", [])
+            if not track_id or not isinstance(names, list):
+                continue
+            if not any(norm(artist) == artist_key or artist_key in norm(artist)
+                       for artist in names if isinstance(artist, str)):
+                continue
+            primary = str(track.get("primary") or names[0] or "")
+            title = str(track.get("title") or "")
+            if (track_id in exclude_ids or
+                    norm("%s - %s" % (primary, title)) in liked_keys or
+                    norm("%s - %s" % (primary, title)) in disliked_keys or
+                    skip_counts.get(track_id, 0) >= AI_SKIP_DISMISS_THRESHOLD):
+                continue
+            matches.append((track, discovery))
+            if len(matches) >= 12:
+                break
+        return matches
+
+    with ThreadPoolExecutor(max_workers=min(6, len(jobs))) as pool:
+        for matches in pool.map(search_artist, jobs):
+            for track, discovery in matches:
+                candidates.setdefault(str(track.get("id") or ""), (track, discovery))
+
+    familiar = []
+    discoveries = []
+    for index, (track_id, (track, discovery)) in enumerate(candidates.items()):
+        names = track.get("artists", [])
+        primary = str(track.get("primary") or (names[0] if names else ""))
+        artist_key = norm(primary)
+        artist_score = max(
+            (artist_scores.get(norm(name), {}).get("score", 0.0)
+             for name in names if isinstance(name, str)),
+            default=0.0,
+        )
+        score = artist_score + float(track_scores.get(track_id, 0.0))
+        if any(norm(name) in active_like_artists for name in names):
+            score += 12.0
+        if any(norm(name) in active_dislike_artists for name in names):
+            score -= 18.0
+        score -= min(skip_counts.get(track_id, 0), 2) * 0.08
+        (discoveries if discovery else familiar).append(
+            (score, index, artist_key, track))
+    familiar.sort(key=lambda item: (-item[0], item[1]))
+    discoveries.sort(key=lambda item: (-item[0], item[1]))
+
+    selected = []
+    used_artists = set()
+    familiar_index = 0
+    discovery_index = 0
+    for position in range(6):
+        prefer_discovery = position in {2, 5}
+        sources = (discoveries, familiar) if prefer_discovery else (familiar, discoveries)
+        chosen = None
+        for source in sources:
+            cursor = discovery_index if source is discoveries else familiar_index
+            while cursor < len(source) and source[cursor][2] in used_artists:
+                cursor += 1
+            if cursor >= len(source):
+                continue
+            chosen = source[cursor]
+            if source is discoveries:
+                discovery_index = cursor + 1
+            else:
+                familiar_index = cursor + 1
+            break
+        if chosen is None:
+            break
+        used_artists.add(chosen[2])
+        selected.append(proxy_track(chosen[3]))
+    return selected
+
+
 # ------------------------------------------------------------------ обложки (Deezer -> Cover Art Archive)
 
 COVER_HOSTS = ("dzcdn.net", "deezer.com")
@@ -1665,6 +1883,7 @@ class Handler(BaseHTTPRequestHandler):
             or path.startswith("/api/auth/")
             or path.startswith("/api/chat/")
             or path.startswith("/api/share/")
+            or path.startswith("/api/ai/")
         )
 
     def _forward_to_primary(self) -> None:
@@ -2388,7 +2607,7 @@ class Handler(BaseHTTPRequestHandler):
             if self._forwards_to_primary(path):
                 return self._forward_to_primary()
             if (path.startswith("/api/auth/") or path.startswith("/api/chat/")
-                    or path.startswith("/api/share/")):
+                    or path.startswith("/api/share/") or path.startswith("/api/ai/")):
                 return self.api_post(path)
             return self._fail("не найдено", 404)
         except (BrokenPipeError, ConnectionResetError):
@@ -2418,6 +2637,431 @@ class Handler(BaseHTTPRequestHandler):
                 self._fail("внутренняя ошибка", 500)
             except Exception:
                 pass
+
+    def ai_post(self, path: str, body: dict) -> None:
+        user = self._user()
+        if not user:
+            return self._fail("нужно войти", 401)
+        user_id = user["id"]
+
+        if path == "/api/ai/events":
+            events = body.get("events")
+            if not isinstance(events, list) or len(events) > 32:
+                return self._fail("ожидается до 32 событий", 400)
+            allowed = {"start", "progress", "complete", "skip", "seek_forward",
+                       "seek_back", "like", "unlike", "dislike", "undislike",
+                       "artist_open"}
+            now = iso()
+            rows = []
+            for event in events:
+                if (not isinstance(event, dict)
+                        or not isinstance(event.get("type"), str)
+                        or event["type"] not in allowed):
+                    return self._fail("некорректное событие модели", 400)
+                track = event.get("track") if isinstance(event.get("track"), dict) else {}
+                artists_raw = track.get("artists", [])
+                artists = []
+                if isinstance(artists_raw, list):
+                    artists = [str(name).strip()[:100] for name in artists_raw[:8]
+                               if str(name).strip()]
+                progress = event.get("progress", 0)
+                try:
+                    progress = max(0.0, min(1.0, float(progress)))
+                except (TypeError, ValueError):
+                    progress = 0.0
+                clean = {
+                    "type": event["type"],
+                    "artist": str(event.get("artist") or "").strip()[:100],
+                    "progress": progress,
+                    "track": {
+                        "id": str(track.get("id") or "")[:128],
+                        "title": str(track.get("title") or "")[:200],
+                        "artists": artists,
+                    },
+                }
+                rows.append((user_id, json.dumps(clean, ensure_ascii=False,
+                                                  separators=(",", ":")), now))
+            if rows:
+                with _db_lock, closing(db()) as conn:
+                    conn.executemany(
+                        "INSERT INTO ai_events (user_id, event_json, created_at) VALUES (?,?,?)",
+                        rows,
+                    )
+                    conn.execute(
+                        "DELETE FROM ai_events WHERE user_id = ? AND id NOT IN "
+                        "(SELECT id FROM ai_events WHERE user_id = ? ORDER BY id DESC LIMIT 5000)",
+                        (user_id, user_id),
+                    )
+                    conn.commit()
+                _schedule_database_replication()
+                self._maybe_retrain_ai_model(user_id)
+            return self._json({"ok": True, "accepted": len(rows)})
+
+        if path == "/api/ai/wave":
+            exclude_ids = body.get("exclude_ids", [])
+            if not isinstance(exclude_ids, list) or len(exclude_ids) > 500:
+                return self._fail("некорректный список исключений", 400)
+            model_row = one(
+                "SELECT model_json FROM ai_models WHERE user_id = ?", (user_id,)
+            )
+            try:
+                model = json.loads(model_row["model_json"]) if model_row else {}
+            except (ValueError, TypeError):
+                model = {}
+            if not isinstance(model, dict) or not model.get("trained"):
+                model = self._train_ai_model(user_id)
+            tracks = generate_ai_wave(user_id, model, {
+                str(track_id)[:128] for track_id in exclude_ids
+            })
+            return self._json({"tracks": tracks})
+
+        if path == "/api/ai/train":
+            model = self._train_ai_model(user_id)
+            return self._json({"ok": True, "model": model})
+
+        if path == "/api/ai/recommend":
+            candidates = body.get("candidates")
+            if not isinstance(candidates, list) or len(candidates) > 250:
+                return self._fail("ожидается до 250 треков-кандидатов", 400)
+            row = one("SELECT model_json FROM ai_models WHERE user_id = ?", (user_id,))
+            try:
+                model = json.loads(row["model_json"]) if row else self._train_ai_model(user_id)
+            except (ValueError, TypeError):
+                return self._fail("модель повреждена", 500)
+            artist_weights = {item["key"]: float(item["score"])
+                              for item in model.get("artists", [])}
+            track_weights = dict(model.get("track_scores", {}))
+            skip_counts = {key: int(value)
+                           for key, value in model.get("skip_counts", {}).items()}
+            seen = set(model.get("seen_track_ids", []))
+            state_row = one("SELECT data FROM user_state WHERE user_id = ?", (user_id,))
+            try:
+                user_state = json.loads(state_row["data"]) if state_row else {}
+            except (ValueError, TypeError):
+                user_state = {}
+            if not isinstance(user_state, dict):
+                user_state = {}
+            liked_keys = {norm(key) for key in user_state.get("liked", [])
+                          if isinstance(key, str)}
+            disliked_keys = {norm(key) for key in user_state.get("disliked", [])
+                             if isinstance(key, str)}
+            active_like_artists = set()
+            active_dislike_artists = set()
+            saved_tracks = user_state.get("savedTracks", [])
+            if isinstance(saved_tracks, list):
+                for track in saved_tracks:
+                    if not isinstance(track, dict):
+                        continue
+                    names = track.get("artists", [])
+                    primary = str(track.get("primary") or (
+                        names[0] if isinstance(names, list) and names else ""))
+                    title = str(track.get("title") or "")
+                    if norm("%s - %s" % (primary, title)) in liked_keys:
+                        active_like_artists.update(norm(name) for name in names
+                                                   if isinstance(name, str))
+                        if primary:
+                            active_like_artists.add(norm(primary))
+                    if norm("%s - %s" % (primary, title)) in disliked_keys:
+                        active_dislike_artists.update(norm(name) for name in names
+                                                      if isinstance(name, str))
+                        if primary:
+                            active_dislike_artists.add(norm(primary))
+            try:
+                last_event_id = int(model.get("last_event_id") or 0)
+            except (TypeError, ValueError):
+                last_event_id = 0
+            fresh_rows = query(
+                "SELECT event_json FROM ai_events WHERE user_id = ? AND id > ? ORDER BY id",
+                (user_id, last_event_id),
+            )
+            for fresh_row in fresh_rows:
+                try:
+                    event = json.loads(fresh_row["event_json"])
+                except (ValueError, TypeError):
+                    continue
+                track = event.get("track") or {}
+                track_id = str(track.get("id") or "")
+                kind = event.get("type")
+                names = track.get("artists") or []
+                primary = str(names[0] if names else "")
+                track_key = norm("%s - %s" % (primary, track.get("title") or ""))
+                if kind == "dislike" and track_key:
+                    disliked_keys.add(track_key)
+                elif kind == "undislike" and track_key:
+                    disliked_keys.discard(track_key)
+                if track_id and kind == "skip":
+                    skip_counts[track_id] = skip_counts.get(track_id, 0) + 1
+                if track_id and kind in {
+                    "like", "unlike", "dislike", "undislike", "complete", "progress"
+                }:
+                    weights = {"like": 10.0, "unlike": -15.0,
+                               "dislike": -25.0, "undislike": 20.0,
+                               "complete": 3.0, "progress": 1.0}
+                    track_weights[track_id] = track_weights.get(track_id, 0.0) + weights[kind]
+                    delta = weights[kind]
+                    for index, name in enumerate(names):
+                        key = norm(name)
+                        if key:
+                            artist_weights[key] = artist_weights.get(key, 0.0) + delta * (
+                                1.0 if index == 0 else 0.45)
+            scored = []
+            for index, candidate in enumerate(candidates):
+                if not isinstance(candidate, dict):
+                    continue
+                track_id = str(candidate.get("id") or "")[:128]
+                names = candidate.get("artists", [])
+                if not track_id or not isinstance(names, list):
+                    continue
+                primary = str(candidate.get("primary") or (
+                    names[0] if names else ""))
+                title = str(candidate.get("title") or "")
+                if norm("%s - %s" % (primary, title)) in liked_keys:
+                    continue
+                if norm("%s - %s" % (primary, title)) in disliked_keys:
+                    continue
+                if skip_counts.get(track_id, 0) >= AI_SKIP_DISMISS_THRESHOLD:
+                    continue
+                weights = [artist_weights.get(norm(name), 0.0)
+                           for name in names[:8] if str(name).strip()]
+                artist_score = max(weights, default=0.0)
+                collab_score = sum(sorted(weights, reverse=True)[1:]) * 0.12
+                score = artist_score + collab_score
+                score += float(track_weights.get(track_id, 0.0))
+                score += max((12.0 for name in names
+                              if norm(name) in active_like_artists), default=0.0)
+                score -= max((18.0 for name in names
+                              if norm(name) in active_dislike_artists), default=0.0)
+                score -= min(skip_counts.get(track_id, 0), 2) * 0.08
+                if track_id in seen:
+                    score -= 0.15
+                discovery = candidate.get("source") == "discovery"
+                scored.append((score, index, track_id, norm(primary), discovery))
+            limit = body.get("limit", 0)
+            try:
+                limit = max(0, min(25, int(limit)))
+            except (TypeError, ValueError):
+                limit = 0
+            if limit:
+                familiar = sorted(
+                    (item for item in scored if not item[4]),
+                    key=lambda item: (-item[0], item[1]),
+                )
+                discovery = sorted(
+                    (item for item in scored if item[4]),
+                    key=lambda item: (-item[0], item[1]),
+                )
+                selected = []
+                used_artists = set()
+                familiar_index = 0
+                discovery_index = 0
+                for position in range(limit):
+                    prefer_discovery = position in {2, 5}
+                    sources = (discovery, familiar) if prefer_discovery else (familiar, discovery)
+                    for source_index, source in enumerate(sources):
+                        cursor = discovery_index if source is discovery else familiar_index
+                        while cursor < len(source) and source[cursor][3] in used_artists:
+                            cursor += 1
+                        if cursor >= len(source):
+                            continue
+                        item = source[cursor]
+                        used_artists.add(item[3])
+                        selected.append(item)
+                        if source is discovery:
+                            discovery_index = cursor + 1
+                        else:
+                            familiar_index = cursor + 1
+                        break
+                scored = selected
+            else:
+                scored.sort(key=lambda item: (-item[0], item[1]))
+            return self._json({"ids": [item[2] for item in scored],
+                               "trained_at": model.get("trained_at", "")})
+
+        if path == "/api/ai/clear":
+            with _db_lock, closing(db()) as conn:
+                conn.execute("DELETE FROM ai_events WHERE user_id = ?", (user_id,))
+                conn.execute("DELETE FROM ai_models WHERE user_id = ?", (user_id,))
+                conn.commit()
+            _schedule_database_replication()
+            return self._json({"ok": True})
+        return self._fail("нет такого метода: %s" % path, 404)
+
+    def _train_ai_model(self, user_id: int) -> dict:
+        rows = query(
+            "SELECT id, event_json FROM ai_events WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        )
+        previous_row = one(
+            "SELECT model_json FROM ai_models WHERE user_id = ?", (user_id,)
+        )
+        try:
+            previous_model = json.loads(previous_row["model_json"]) if previous_row else {}
+        except (ValueError, TypeError):
+            previous_model = {}
+        if not isinstance(previous_model, dict):
+            previous_model = {}
+        try:
+            previous_event_id = int(previous_model.get("last_event_id") or 0)
+            skip_counts = {
+                str(key): max(0, int(value))
+                for key, value in previous_model.get("skip_counts", {}).items()
+            }
+        except (AttributeError, TypeError, ValueError):
+            previous_event_id = 0
+            skip_counts = {}
+        state_row = one("SELECT data FROM user_state WHERE user_id = ?", (user_id,))
+        try:
+            user_state = json.loads(state_row["data"]) if state_row else {}
+        except (ValueError, TypeError):
+            user_state = {}
+        if not isinstance(user_state, dict):
+            user_state = {}
+        liked_order = user_state.get("liked", [])
+        saved_tracks = user_state.get("savedTracks", [])
+        tracks_by_key = {}
+        if isinstance(saved_tracks, list):
+            for track in saved_tracks:
+                if not isinstance(track, dict):
+                    continue
+                artists = track.get("artists", [])
+                primary = str(track.get("primary") or (
+                    artists[0] if isinstance(artists, list) and artists else ""))
+                title = str(track.get("title") or "")
+                key = norm("%s - %s" % (primary, title))
+                if key:
+                    tracks_by_key[key] = track
+
+        active_likes = []
+        if isinstance(liked_order, list):
+            for liked_key in reversed(liked_order):
+                track = tracks_by_key.get(norm(liked_key))
+                if track:
+                    active_likes.append(track)
+                if len(active_likes) >= 50:
+                    break
+        active_dislikes = []
+        disliked_order = user_state.get("disliked", [])
+        if isinstance(disliked_order, list):
+            for disliked_key in reversed(disliked_order):
+                track = tracks_by_key.get(norm(disliked_key))
+                if track:
+                    active_dislikes.append(track)
+                if len(active_dislikes) >= 50:
+                    break
+
+        events = []
+        for row in rows:
+            try:
+                event = json.loads(row["event_json"])
+            except (ValueError, TypeError):
+                continue
+            if isinstance(event, dict):
+                events.append((int(row["id"]), event))
+        events.extend((0, {"type": "active_like", "track": track})
+                      for track in active_likes)
+        events.extend((0, {"type": "active_dislike", "track": track})
+                  for track in active_dislikes)
+
+        artists = {}
+        track_scores = {}
+        seen_tracks = []
+        for event_id, event in events:
+            kind = event.get("type")
+            try:
+                progress = max(0.0, min(1.0, float(event.get("progress") or 0)))
+            except (TypeError, ValueError):
+                progress = 0.0
+            score = {
+                "start": 0.05,
+                "progress": 0.8 + progress,
+                "complete": 3.0,
+                "skip": 0.0,
+                "seek_forward": -0.1,
+                "seek_back": 0.1,
+                "like": 10.0,
+                "active_like": 12.0,
+                "dislike": -25.0,
+                "active_dislike": -18.0,
+                "undislike": 20.0,
+                "unlike": -15.0,
+                "artist_open": 1.8,
+            }.get(kind, 0.0)
+            track = event.get("track") or {}
+            track_id = str(track.get("id") or "")
+            if track_id:
+                if kind == "start":
+                    seen_tracks.append(track_id)
+                if kind == "skip" and event_id > previous_event_id:
+                    skip_counts[track_id] = skip_counts.get(track_id, 0) + 1
+                if kind in {"progress", "complete", "skip", "like", "active_like",
+                            "unlike", "dislike", "active_dislike", "undislike"}:
+                    track_scores[track_id] = track_scores.get(track_id, 0.0) + score
+            names = track.get("artists") or []
+            if kind == "artist_open" and event.get("artist"):
+                names = [event["artist"]]
+            for index, name in enumerate(names):
+                key = norm(name)
+                if not key:
+                    continue
+                item = artists.setdefault(
+                    key, {"key": key, "name": str(name), "score": 0.0})
+                item["score"] += score * (1.0 if index == 0 else 0.45)
+
+        trained_at = iso()
+        trained_at_epoch = int(time.time())
+        last_event_id = max(previous_event_id, int(rows[-1]["id"]) if rows else 0)
+        ranked_artists = sorted(
+            artists.values(), key=lambda item: item["score"], reverse=True)
+        model = {
+            "trained": bool(events),
+            "trained_at": trained_at,
+            "trained_at_epoch": trained_at_epoch,
+            "last_event_id": last_event_id,
+            "event_count": len(rows),
+            "liked_seed_count": len(active_likes),
+            "disliked_seed_count": len(active_dislikes),
+            "liked_seed_track_ids": [str(track.get("id") or "")
+                                     for track in active_likes if track.get("id")],
+            "disliked_seed_track_ids": [str(track.get("id") or "")
+                                        for track in active_dislikes if track.get("id")],
+            "artists": ranked_artists[:50],
+            "top_artists": [item for item in ranked_artists if item["score"] > 0][:20],
+            "track_scores": track_scores,
+            "skip_counts": skip_counts,
+            "seen_track_ids": list(dict.fromkeys(seen_tracks))[-500:],
+        }
+        execute(
+            "INSERT INTO ai_models (user_id, model_json, trained_at) VALUES (?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET model_json = excluded.model_json, "
+            "trained_at = excluded.trained_at",
+            (user_id, json.dumps(model, ensure_ascii=False, separators=(",", ":")), trained_at),
+        )
+        return model
+
+    def _maybe_retrain_ai_model(self, user_id: int) -> bool:
+        row = one("SELECT model_json FROM ai_models WHERE user_id = ?", (user_id,))
+        model = {}
+        if row:
+            try:
+                model = json.loads(row["model_json"])
+            except (ValueError, TypeError):
+                model = {}
+        try:
+            last_event_id = int(model.get("last_event_id") or 0)
+            trained_at = int(model.get("trained_at_epoch") or 0)
+        except (TypeError, ValueError):
+            last_event_id = 0
+            trained_at = 0
+        pending = one(
+            "SELECT COUNT(*) AS count FROM ai_events WHERE user_id = ? AND id > ?",
+            (user_id, last_event_id),
+        )
+        if int(pending["count"] if pending else 0) < AI_RETRAIN_MIN_NEW_EVENTS:
+            return False
+        if trained_at and time.time() - trained_at < AI_RETRAIN_INTERVAL_SECONDS:
+            return False
+        self._train_ai_model(user_id)
+        return True
 
     def api_put_state(self) -> None:
         # Сначала читаем тело целиком, иначе при keep-alive оно попадёт в следующий запрос.
@@ -2763,6 +3407,115 @@ class Handler(BaseHTTPRequestHandler):
         return self._fail("нет такого метода: %s" % path, 404)
 
     def api_get(self, path: str) -> None:
+        if path == "/api/ai/model":
+            user = self._user()
+            if not user:
+                return self._fail("нужно войти", 401)
+            row = one(
+                "SELECT model_json FROM ai_models WHERE user_id = ?",
+                (user["id"],),
+            )
+            model = None
+            if row:
+                try:
+                    model = json.loads(row["model_json"])
+                except (ValueError, TypeError):
+                    return self._fail("модель повреждена", 500)
+            if isinstance(model, dict):
+                artists = {
+                    item["key"]: dict(item)
+                    for item in model.get("artists", [])
+                    if isinstance(item, dict) and item.get("key")
+                }
+
+                def add_live_artist(name, weight):
+                    key = norm(name)
+                    if not key:
+                        return
+                    item = artists.setdefault(
+                        key, {"key": key, "name": str(name), "score": 0.0})
+                    item["score"] += weight
+
+                try:
+                    last_event_id = int(model.get("last_event_id") or 0)
+                except (TypeError, ValueError):
+                    last_event_id = 0
+                fresh_rows = query(
+                    "SELECT event_json FROM ai_events WHERE user_id = ? AND id > ? ORDER BY id",
+                    (user["id"], last_event_id),
+                )
+                live_event_weights = {
+                    "start": 0.05,
+                    "progress": 0.8,
+                    "complete": 3.0,
+                    "skip": 0.0,
+                    "seek_forward": -0.1,
+                    "seek_back": 0.1,
+                    "like": 10.0,
+                    "unlike": -15.0,
+                    "dislike": -25.0,
+                    "undislike": 20.0,
+                    "artist_open": 1.8,
+                }
+                for fresh_row in fresh_rows:
+                    try:
+                        event = json.loads(fresh_row["event_json"])
+                    except (ValueError, TypeError):
+                        continue
+                    kind = event.get("type")
+                    weight = live_event_weights.get(kind, 0.0)
+                    track = event.get("track") or {}
+                    names = track.get("artists") or []
+                    if kind == "artist_open" and event.get("artist"):
+                        names = [event["artist"]]
+                    for index, name in enumerate(names):
+                        add_live_artist(name, weight * (1.0 if index == 0 else 0.45))
+
+                state_row = one(
+                    "SELECT data FROM user_state WHERE user_id = ?", (user["id"],)
+                )
+                try:
+                    user_state = json.loads(state_row["data"]) if state_row else {}
+                except (ValueError, TypeError):
+                    user_state = {}
+                if isinstance(user_state, dict):
+                    liked_keys = {
+                        norm(key) for key in user_state.get("liked", [])
+                        if isinstance(key, str)
+                    }
+                    disliked_keys = {
+                        norm(key) for key in user_state.get("disliked", [])
+                        if isinstance(key, str)
+                    }
+                    seed_ids = set(model.get("liked_seed_track_ids", []))
+                    dislike_seed_ids = set(model.get("disliked_seed_track_ids", []))
+                    saved_tracks = user_state.get("savedTracks", [])
+                    if isinstance(saved_tracks, list):
+                        for track in saved_tracks:
+                            if not isinstance(track, dict):
+                                continue
+                            names = track.get("artists", [])
+                            primary = str(track.get("primary") or (
+                                names[0] if isinstance(names, list) and names else ""))
+                            title = str(track.get("title") or "")
+                            track_key = norm("%s - %s" % (primary, title))
+                            track_id = str(track.get("id") or "")
+                            if track_key in liked_keys and track_id not in seed_ids:
+                                for name in names if isinstance(names, list) else [primary]:
+                                    add_live_artist(name, 12.0)
+                            if track_key in disliked_keys and track_id not in dislike_seed_ids:
+                                for name in names if isinstance(names, list) else [primary]:
+                                    add_live_artist(name, -18.0)
+                live_ranked = sorted(
+                    artists.values(), key=lambda item: item["score"], reverse=True)
+                model["top_artists"] = [
+                    item for item in live_ranked if item["score"] > 0
+                ][:20]
+            count = one(
+                "SELECT COUNT(*) AS count FROM ai_events WHERE user_id = ?",
+                (user["id"],),
+            )["count"]
+            return self._json({"model": model, "event_count": count})
         if path.startswith("/api/chat/"):
             return self.chat_get(path)
         if path == "/api/share/track":
@@ -2979,6 +3732,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/api/chat/"):
             return self.chat_post(path, body)
+        if path.startswith("/api/ai/"):
+            return self.ai_post(path, body)
         if path == "/api/auth/username":
             user = self._user()
             if not user:

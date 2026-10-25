@@ -996,18 +996,26 @@ class _ProfilePageState extends State<ProfilePage> {
               spacing: 8,
               runSpacing: 8,
               children: [
-                Text(
-                  '@${state.auth.username ?? ''}',
-                  style: TextStyle(
-                      fontSize: 14,
-                      color: ThemeScope.of(context).mutedForeground),
-                ),
-                ChipButton(
-                  label: 'Change username',
-                  icon: 'edit',
-                  ghost: true,
-                  onTap: _editUsername,
-                ),
+                if ((state.auth.username ?? '').isNotEmpty)
+                  Semantics(
+                    button: true,
+                    label: 'Change username',
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(6),
+                      onTap: _editUsername,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 4, vertical: 3),
+                        child: Text(
+                          '@${state.auth.username}',
+                          style: TextStyle(
+                            fontSize: compact ? 14 : 16,
+                            color: ThemeScope.of(context).mutedForeground,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
                 if ((state.auth.username ?? '').isNotEmpty)
                   ChipButton(
                     label: 'Share profile',

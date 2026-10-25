@@ -143,6 +143,68 @@ class AuthService {
     await _call('PUT', '/api/state', rawBody: json);
   }
 
+  Future<Map<String, dynamic>> aiModel() async {
+    final data = await _call('GET', '/api/ai/model');
+    final model = data['model'];
+    return {
+      'model': model is Map
+          ? model.map((key, value) => MapEntry(key.toString(), value))
+          : null,
+      'event_count': data['event_count'] ?? 0,
+    };
+  }
+
+  Future<void> recordAiEvents(List<Map<String, dynamic>> events) async {
+    if (!isSignedIn || events.isEmpty) return;
+    await _post('/api/ai/events', {'events': events});
+  }
+
+  Future<Map<String, dynamic>> trainAiModel() async {
+    final data = await _post('/api/ai/train', {});
+    final model = data['model'];
+    return model is Map
+        ? model.map((key, value) => MapEntry(key.toString(), value))
+        : <String, dynamic>{};
+  }
+
+  Future<List<String>> rankAiTracks(
+    List<Track> tracks, {
+    Set<String> discoveryIds = const {},
+    int limit = 0,
+  }) async {
+    final candidates = tracks
+        .take(200)
+        .map((track) => {
+              'id': track.id,
+              'title': track.title,
+              'primary': track.primary,
+              'artists': track.artists,
+              'source':
+                  discoveryIds.contains(track.id) ? 'discovery' : 'familiar',
+            })
+        .toList();
+    final data = await _post('/api/ai/recommend', {
+      'candidates': candidates,
+      'limit': limit,
+    });
+    return (data['ids'] as List? ?? const [])
+        .map((id) => id.toString())
+        .toList();
+  }
+
+  Future<List<Map<String, dynamic>>> aiWaveTracks({
+    Set<String> excludeIds = const {},
+  }) async {
+    final data = await _post('/api/ai/wave', {
+      'exclude_ids': excludeIds.take(500).toList(),
+    });
+    return _maps(data['tracks']);
+  }
+
+  Future<void> clearAiData() async {
+    await _post('/api/ai/clear', {});
+  }
+
   Future<Map<String, dynamic>> chatChats() => _call('GET', '/api/chat/chats');
 
   Future<String> createPrivatePlaylistShare(String playlistId) async {

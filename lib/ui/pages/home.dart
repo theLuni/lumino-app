@@ -84,10 +84,10 @@ class HomePage extends StatelessWidget {
     final hotKey = state.reg('hot', hot);
 
     final sections = <Widget>[];
+    sections.add(SectionTitle(
+        title: 'More from your artists',
+        icon: const LIcon('heart', size: 20, filled: true)));
     if (mineRel.isNotEmpty) {
-      sections.add(SectionTitle(
-          title: 'More from your artists',
-          icon: const LIcon('heart', size: 20, filled: true)));
       sections.add(CardsRow(children: [
         for (final item in mineRel)
           ReleaseCard(
@@ -99,9 +99,6 @@ class HomePage extends StatelessWidget {
       ]));
     } else if (mine.length >= 3) {
       final mineKey = state.reg('mine', mine);
-      sections.add(SectionTitle(
-          title: 'More from your artists',
-          icon: const LIcon('heart', size: 20, filled: true)));
       sections.add(CardsRow(children: [
         for (final track in mine)
           TrackCard(
@@ -115,11 +112,13 @@ class HomePage extends StatelessWidget {
             onArtist: (name) => state.go('artist', arg: name),
           ),
       ]));
+    } else {
+      sections.add(const _HomeCardsPlaceholder());
     }
 
+    sections.add(const SectionTitle(
+        title: 'Recommended for you', icon: LIcon('spark', size: 20)));
     if (recRel.isNotEmpty) {
-      sections.add(SectionTitle(
-          title: 'Recommended for you', icon: const LIcon('spark', size: 20)));
       sections.add(CardsRow(children: [
         for (final item in recRel)
           ReleaseCard(
@@ -131,8 +130,6 @@ class HomePage extends StatelessWidget {
       ]));
     } else if (recTracks.isNotEmpty) {
       final recKey = state.reg('recs', recTracks);
-      sections.add(SectionTitle(
-          title: 'Recommended for you', icon: const LIcon('spark', size: 20)));
       sections.add(CardsRow(children: [
         for (final track in recTracks)
           TrackCard(
@@ -147,11 +144,13 @@ class HomePage extends StatelessWidget {
             onArtist: (name) => state.go('artist', arg: name),
           ),
       ]));
+    } else {
+      sections.add(const _HomeCardsPlaceholder());
     }
 
     final genreTracks =
         state.genreRecTracks.where((track) => track.cover.isNotEmpty).toList();
-    if (genreTracks.isNotEmpty) {
+    if (state.current != null || genreTracks.isNotEmpty) {
       final genreKey = state.reg('genre-recs', genreTracks);
       sections.add(SectionTitle(
         title: state.genreRecLabel.isEmpty
@@ -171,6 +170,10 @@ class HomePage extends StatelessWidget {
             onArtist: (name) => state.go('artist', arg: name),
           ),
       ]));
+      if (genreTracks.isEmpty) {
+        sections.removeLast();
+        sections.add(const _HomeCardsPlaceholder());
+      }
     }
 
     sections.add(SectionTitle(
@@ -212,6 +215,7 @@ class HomePage extends StatelessWidget {
               letterSpacing: -0.5,
             ),
           ),
+          _MyWavePanel(state: state),
           SectionTitle(
             title: 'Quick access',
             icon: Container(
@@ -241,7 +245,6 @@ class _QuickGrid extends StatelessWidget {
   final AppState state;
   final List<Track> tracks;
   final int likedCount;
-
   @override
   Widget build(BuildContext context) {
     final compact = MediaQuery.sizeOf(context).width < 600;
@@ -287,6 +290,165 @@ class _QuickGrid extends StatelessWidget {
       ],
     );
     state.go('release', arg: ReleaseArg(release, artist: track.primary));
+  }
+}
+
+class _HomeCardsPlaceholder extends StatelessWidget {
+  const _HomeCardsPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    const fill = Color(0x12FFFFFF);
+    return CardsRow(
+      children: List.generate(
+        4,
+        (_) => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AspectRatio(
+              aspectRatio: 1,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: fill,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              width: 86,
+              height: 10,
+              decoration: BoxDecoration(
+                color: fill,
+                borderRadius: BorderRadius.circular(5),
+              ),
+            ),
+            const SizedBox(height: 7),
+            Container(
+              width: 54,
+              height: 8,
+              decoration: BoxDecoration(
+                color: fill,
+                borderRadius: BorderRadius.circular(4),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MyWavePanel extends StatelessWidget {
+  const _MyWavePanel({required this.state});
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = state.myWaveActive;
+    final likedArtistKeys = state
+        .availableTracks()
+        .where((track) => state.liked.contains(track.key))
+        .expand((track) => track.artists)
+        .map(norm)
+        .toSet();
+    final likedArtists = state
+        .tasteArtists()
+        .where((artist) => likedArtistKeys.contains(artist.key))
+        .take(5)
+        .toList();
+    final label = state.myWaveLoading
+        ? 'Building your wave...'
+        : active
+            ? (state.playing ? 'Pause My Wave' : 'Resume My Wave')
+            : 'Play My Wave';
+    return Padding(
+      padding: const EdgeInsets.only(top: 20),
+      child: SizedBox(
+        width: double.infinity,
+        child: GlassPanel(
+          radius: 16,
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 22),
+          child: LayoutBuilder(builder: (context, constraints) {
+            final heading = Row(children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF63C6B2).withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                alignment: Alignment.center,
+                child: const LIcon('spark', size: 24, color: Color(0xFF63C6B2)),
+              ),
+              const SizedBox(width: 14),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('My Wave',
+                        style: TextStyle(
+                            fontSize: 21, fontWeight: FontWeight.w700)),
+                    SizedBox(height: 5),
+                    Text('Your favorites, plus artists you may love next.',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 13)),
+                  ],
+                ),
+              ),
+            ]);
+            final button = ChipButton(
+              label: label,
+              icon: active && state.playing ? 'pause' : 'play',
+              onTap: state.myWaveLoading ? null : () => state.startMyWave(),
+              height: 40,
+              fontSize: 13,
+            );
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (constraints.maxWidth < 560) ...[
+                  heading,
+                  const SizedBox(height: 18),
+                  Align(alignment: Alignment.centerRight, child: button),
+                ] else
+                  Row(children: [
+                    Expanded(child: heading),
+                    const SizedBox(width: 18),
+                    button,
+                  ]),
+                if (likedArtists.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    'Artists you like',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: ThemeScope.of(context).mutedForeground,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final artist in likedArtists)
+                        ChipButton(
+                          label: artist.name,
+                          icon: 'user',
+                          ghost: true,
+                          onTap: () => state.go('artist', arg: artist.name),
+                        ),
+                    ],
+                  ),
+                ],
+              ],
+            );
+          }),
+        ),
+      ),
+    );
   }
 }
 
@@ -419,15 +581,16 @@ class _MixesRow extends StatelessWidget {
           text:
               'Mixes need a few played tracks. Start listening and they will appear here.');
     }
-    final usedCovers = <String>{};
     final cards = <Widget>[];
     for (var i = 0; i < mixes.length; i++) {
       final mix = mixes[i];
-      final covered = mix.tracks.where((t) => t.cover.isNotEmpty).toList();
-      final lead =
-          covered.where((t) => !usedCovers.contains(t.cover)).firstOrNull ??
-              (covered.isNotEmpty ? covered.first : mix.tracks.first);
-      if (lead.cover.isNotEmpty) usedCovers.add(lead.cover);
+      final selectedCover = mix.tracks
+              .where((track) => track.id == mix.coverTrackId)
+              .firstOrNull ??
+          mix.tracks.first;
+      final lead = mix.coverUrl.isEmpty || selectedCover.cover == mix.coverUrl
+          ? selectedCover
+          : (selectedCover.copy()..cover = mix.coverUrl);
       final ids = mix.tracks.map((t) => t.id).toList();
       final key = state.reg('mix$i', mix.tracks);
       state.mixSeeds[key] = mix.seed;
@@ -551,6 +714,7 @@ class _HomeWelcome extends StatelessWidget {
               letterSpacing: -0.5,
             ),
           ),
+          _MyWavePanel(state: state),
           if (artists.isNotEmpty) ...[
             const SectionTitle(
                 title: 'Your artists',

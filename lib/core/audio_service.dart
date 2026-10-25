@@ -1,7 +1,11 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:smtc_windows/smtc_windows.dart';
+
+enum MediaCommand { play, pause, next, previous, stop }
 
 /// Audio engine built on media_kit (libmpv). It supports direct HTTPS streams
 /// from the Lumino node, seeking, volume and a 10-band equalizer via mpv's
@@ -11,6 +15,13 @@ class AudioService {
     _subscriptions.add(player.stream.playing.listen((value) {
       playing = value;
       playingNotifier.value = value;
+      _updateMediaSession(() async {
+        final session = _mediaSession;
+        if (session != null) {
+          await session.setPlaybackStatus(
+              value ? PlaybackStatus.playing : PlaybackStatus.paused);
+        }
+      });
     }));
     _subscriptions.add(player.stream.position.listen((value) {
       position = value;
@@ -19,10 +30,18 @@ class AudioService {
       if (delta >= threshold || delta <= -threshold) {
         positionNotifier.value = value;
       }
+      final now = DateTime.now();
+      if (_lastMediaTimelineUpdate == null ||
+          now.difference(_lastMediaTimelineUpdate!) >=
+              const Duration(seconds: 1)) {
+        _lastMediaTimelineUpdate = now;
+        _updateMediaTimeline();
+      }
     }));
     _subscriptions.add(player.stream.duration.listen((value) {
       duration = value;
       durationNotifier.value = value;
+      _updateMediaTimeline();
     }));
     _subscriptions.add(player.stream.completed.listen((value) {
       if (value && !_ended) {
@@ -37,6 +56,46 @@ class AudioService {
       onError?.call(message);
     }));
   }
+
+  static SMTCWindows? _mediaSession;
+
+  static Future<void> initializeWindowsMediaSession() async {
+    if (!Platform.isWindows || _mediaSession != null) return;
+    try {
+      await SMTCWindows.initialize();
+      final session = SMTCWindows(
+        config: const SMTCConfig(
+          playEnabled: true,
+          pauseEnabled: true,
+          nextEnabled: true,
+          prevEnabled: true,
+          stopEnabled: true,
+          fastForwardEnabled: false,
+          rewindEnabled: false,
+        ),
+      );
+      _mediaSession = session;
+      session.buttonPressStream.listen(_handleMediaButton);
+    } catch (error) {
+      debugPrint('Windows media controls could not be initialized: $error');
+    }
+  }
+
+  static void Function(MediaCommand command)? _onMediaCommand;
+
+  static void _handleMediaButton(PressedButton button) {
+    final command = switch (button) {
+      PressedButton.play => MediaCommand.play,
+      PressedButton.pause => MediaCommand.pause,
+      PressedButton.next => MediaCommand.next,
+      PressedButton.previous => MediaCommand.previous,
+      PressedButton.stop => MediaCommand.stop,
+      _ => null,
+    };
+    if (command != null) _onMediaCommand?.call(command);
+  }
+
+  DateTime? _lastMediaTimelineUpdate;
 
   final Player player = Player();
   final List<StreamSubscription<dynamic>> _subscriptions = [];
@@ -55,6 +114,64 @@ class AudioService {
 
   VoidCallback? onEnded;
   void Function(String message)? onError;
+  static void setMediaCommandHandler(
+      void Function(MediaCommand command)? handler) {
+    _onMediaCommand = handler;
+  }
+
+  Future<void> setCurrentMedia({
+    required String title,
+    required String artist,
+    required String album,
+    required String thumbnail,
+  }) async {
+    final session = _mediaSession;
+    if (session == null) return;
+    await _updateMediaSession(() async {
+      await session.enableSmtc();
+      await session.updateMetadata(MusicMetadata(
+        title: title,
+        artist: artist,
+        album: album,
+        albumArtist: artist,
+        thumbnail: thumbnail.isEmpty ? null : thumbnail,
+      ));
+      await _updateMediaTimeline();
+    });
+  }
+
+  Future<void> clearCurrentMedia() async {
+    final session = _mediaSession;
+    if (session == null) return;
+    await _updateMediaSession(() async {
+      await session.setPlaybackStatus(PlaybackStatus.stopped);
+      await session.clearMetadata();
+      await session.disableSmtc();
+    });
+  }
+
+  Future<void> _updateMediaTimeline() async {
+    final session = _mediaSession;
+    if (session == null || !session.enabled) return;
+    final endTime =
+        duration.inMilliseconds.clamp(0, 0x7fffffffffffffff).toInt();
+    final positionTime = position.inMilliseconds.clamp(0, endTime).toInt();
+    await _updateMediaSession(() => session.updateTimeline(PlaybackTimeline(
+          startTimeMs: 0,
+          endTimeMs: endTime,
+          positionMs: positionTime,
+          minSeekTimeMs: 0,
+          maxSeekTimeMs: endTime,
+        )));
+  }
+
+  Future<void> _updateMediaSession(Future<void> Function() update) async {
+    try {
+      await update();
+    } catch (error) {
+      debugPrint('Windows media controls update failed: $error');
+    }
+  }
 
   Future<void> load(String url, {double volume = 0.7}) async {
     _ended = false;
@@ -86,6 +203,7 @@ class AudioService {
     try {
       await player.stop();
     } catch (_) {}
+    await clearCurrentMedia();
   }
 
   Future<void> seek(Duration value) async {

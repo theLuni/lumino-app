@@ -489,6 +489,29 @@ class _MobilePlayerBar extends StatelessWidget {
                       tooltip: 'Next',
                       onTap: () => state.next(),
                     ),
+                    if (state.myWaveActive) ...[
+                      IconAction(
+                        icon: 'heart',
+                        size: 30,
+                        iconSize: 16,
+                        active: state.liked.contains(track.key),
+                        tooltip: state.liked.contains(track.key)
+                            ? 'Remove from Liked Songs'
+                            : 'Like',
+                        onTap: () => state.toggleLike(track),
+                      ),
+                      IconAction(
+                        icon: 'thumbDown',
+                        size: 30,
+                        iconSize: 16,
+                        active: state.disliked.contains(track.key),
+                        filled: state.disliked.contains(track.key),
+                        tooltip: state.disliked.contains(track.key)
+                            ? 'Remove dislike'
+                            : 'Dislike',
+                        onTap: () => state.toggleDislike(track),
+                      ),
+                    ],
                     IconAction(
                       icon: 'share',
                       size: 30,
@@ -1123,7 +1146,6 @@ class _PlayerBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final track = state.current;
-    final liked = track != null && state.liked.contains(track.key);
     return AnimatedSlide(
       duration: const Duration(milliseconds: 450),
       curve: Curves.easeOutCubic,
@@ -1146,8 +1168,7 @@ class _PlayerBar extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(horizontal: 14),
                     child: Row(children: [
                       Expanded(
-                        child: _PlayerLeft(
-                            state: state, track: track, liked: liked),
+                        child: _PlayerLeft(state: state, track: track),
                       ),
                       _PlayerCenter(state: state),
                       Expanded(
@@ -1257,11 +1278,9 @@ class _PlayerProgressState extends State<_PlayerProgress> {
 }
 
 class _PlayerLeft extends StatelessWidget {
-  const _PlayerLeft(
-      {required this.state, required this.track, required this.liked});
+  const _PlayerLeft({required this.state, required this.track});
   final AppState state;
   final Track? track;
-  final bool liked;
 
   @override
   Widget build(BuildContext context) {
@@ -1313,16 +1332,17 @@ class _PlayerLeft extends StatelessWidget {
           ],
         ),
       ),
-      if (track != null)
+      if (track != null && state.myWaveActive)
         IconAction(
-          icon: 'heart',
+          icon: 'thumbDown',
           size: 34,
           iconSize: 18,
-          color: liked ? Colors.white : const Color(0x8CFFFFFF),
-          filled: liked,
-          animateOnTap: true,
-          onTap: () => state.toggleLike(track),
-          tooltip: 'Like',
+          active: state.disliked.contains(track!.key),
+          filled: state.disliked.contains(track!.key),
+          onTap: () => state.toggleDislike(track),
+          tooltip: state.disliked.contains(track!.key)
+              ? 'Remove dislike'
+              : 'Dislike',
         ),
     ]);
   }
@@ -1334,6 +1354,8 @@ class _PlayerCenter extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final track = state.current;
+    final liked = track != null && state.liked.contains(track.key);
     return Row(mainAxisSize: MainAxisSize.min, children: [
       IconAction(
         icon: 'prev',
@@ -1362,6 +1384,20 @@ class _PlayerCenter extends StatelessWidget {
         color: const Color(0x8CFFFFFF),
         filled: true,
       ),
+      if (track != null) ...[
+        const SizedBox(width: 8),
+        IconAction(
+          icon: 'heart',
+          size: 34,
+          iconSize: 18,
+          color: liked ? Colors.white : const Color(0x8CFFFFFF),
+          active: liked,
+          filled: liked,
+          animateOnTap: true,
+          onTap: () => state.toggleLike(track),
+          tooltip: liked ? 'Remove from Liked Songs' : 'Add to Liked Songs',
+        ),
+      ],
     ]);
   }
 }

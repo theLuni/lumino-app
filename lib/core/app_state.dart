@@ -31,9 +31,23 @@ class TasteArtist {
 }
 
 class DailyMix {
-  const DailyMix(this.tracks, this.seed);
+  const DailyMix(
+    this.tracks,
+    this.seed, {
+    this.coverTrackId = '',
+    this.coverUrl = '',
+  });
   final List<Track> tracks;
   final String seed;
+  final String coverTrackId;
+  final String coverUrl;
+
+  Map<String, dynamic> toJson() => {
+        'ids': tracks.map((track) => track.id).toList(),
+        'seed': seed,
+        'cover_track_id': coverTrackId,
+        'cover_url': coverUrl,
+      };
 }
 
 class HomeReleaseItem {
@@ -67,7 +81,9 @@ class AppState extends ChangeNotifier {
     required this.audio,
     required this.auth,
     this.registeredDisplayName,
-  });
+  }) {
+    AudioService.setMediaCommandHandler(_handleMediaCommand);
+  }
 
   final Persistence persistence;
   final NodeService node;
@@ -84,7 +100,10 @@ class AppState extends ChangeNotifier {
 
   final Map<String, Track> byId = {};
   final Set<String> liked = {};
+  final Set<String> disliked = {};
   final List<String> queue = [];
+  bool myWaveActive = false;
+  bool myWaveLoading = false;
   int qi = -1;
   bool shuffle = false;
   final Set<String> _shufflePlayed = {};
@@ -148,11 +167,14 @@ class AppState extends ChangeNotifier {
   bool _playbackPending = false;
   bool _nodeRecovering = false;
   String? _countedId;
+  int _lastAiSeekAt = 0;
   int _relSession = 0;
   final Map<String, Future<Release>> _fillReleaseFutures = {};
   final ImportSearchCache _importCache = ImportSearchCache();
 
   final Set<String> _heldKeys = {};
+  final Set<String> _waveSeenIds = {};
+  bool _waveExtending = false;
   StreamSubscription<NodeChange>? _nodeSubscription;
   bool _listeningToAudio = false;
   Timer? _notifyTimer;
@@ -211,6 +233,8 @@ class AppState extends ChangeNotifier {
     final saved = await persistence.loadState();
     final likedList = asList(saved['liked']);
     liked.addAll(likedList.map((v) => v.toString()));
+    final dislikedList = asList(saved['disliked']);
+    disliked.addAll(dislikedList.map((value) => value.toString()));
     if (saved['volume'] is num) {
       volume = clampDouble(saved['volume'] as num, 0, 1);
     }
@@ -233,6 +257,12 @@ class AppState extends ChangeNotifier {
         .map(Playlist.fromJson)
         .toList();
     final playlistTrackIds = playlists.expand((p) => p.ids).toSet();
+    final dailyMixState = asMap(saved['dailyMixes']);
+    final dailyMixIds = asList(dailyMixState['items'])
+        .map(asMap)
+        .expand((mix) => asList(mix['ids']).map((id) => id.toString()))
+        .toSet();
+    playlistTrackIds.addAll(dailyMixIds);
 
     final restoredTracks = asList(saved['savedTracks']);
     if (saved['profile'] is Map) {
@@ -284,6 +314,25 @@ class AppState extends ChangeNotifier {
         byId.putIfAbsent(track.id, () => track);
       }
     }
+    if (asInt(dailyMixState['day']) == _dailySeed) {
+      final restoredMixes = asList(dailyMixState['items'])
+          .map(asMap)
+          .map((mix) {
+            final tracks = asList(mix['ids'])
+                .map((id) => byId[id.toString()])
+                .whereType<Track>()
+                .toList();
+            return DailyMix(
+              tracks,
+              asString(mix['seed']),
+              coverTrackId: asString(mix['cover_track_id']),
+              coverUrl: asString(mix['cover_url']),
+            );
+          })
+          .where((mix) => mix.tracks.isNotEmpty)
+          .toList();
+      if (restoredMixes.isNotEmpty) _dailyMixCache = restoredMixes;
+    }
 
     final restoredQueue =
         asList(saved['queue']).map((id) => id.toString()).toList();
@@ -304,7 +353,7 @@ class AppState extends ChangeNotifier {
     await audio.setVolume(volume);
     await audio.setQuality(settings.quality);
     await audio.applyEqualizer(settings.eq.enabled, settings.eq.bands);
-    audio.onEnded = () => next(auto: true);
+    audio.onEnded = _onTrackEnded;
     audio.onError = _onAudioError;
     if (!_listeningToAudio) {
       _listeningToAudio = true;
@@ -339,19 +388,102 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _handleMediaCommand(MediaCommand command) {
+    Future<void> action;
+    switch (command) {
+      case MediaCommand.play:
+        action = audio.playing ? Future<void>.value() : togglePlay();
+        break;
+      case MediaCommand.pause:
+      case MediaCommand.stop:
+        action = audio.playing ? togglePlay() : Future<void>.value();
+        break;
+      case MediaCommand.next:
+        action = next();
+        break;
+      case MediaCommand.previous:
+        action = prev();
+        break;
+    }
+    unawaited(_runMediaCommand(action));
+  }
+
+  Future<void> _runMediaCommand(Future<void> action) async {
+    try {
+      await action;
+    } catch (error) {
+      showToast('Could not handle Windows media control: $error');
+    }
+  }
+
   void _onPosition() {
     final track = current;
     if (track == null) return;
+    if (myWaveActive && audio.playing && queue.length - qi <= 2) {
+      unawaited(_extendMyWave());
+    }
     if (audio.playing &&
         audio.position.inSeconds > 15 &&
         _countedId != track.id) {
       _countedId = track.id;
       recordPlay(track);
+      _recordAiEvent('progress', track, progress: _trackProgress(track));
     }
+  }
+
+  double _trackProgress(Track track) {
+    final total = duration.inMilliseconds;
+    return total <= 0
+        ? 0
+        : clampDouble(audio.position.inMilliseconds / total, 0, 1);
+  }
+
+  void _recordAiEvent(String type, Track? track,
+      {String artist = '', double progress = 0}) {
+    if (!auth.isSignedIn) return;
+    final trackData = track == null
+        ? <String, dynamic>{}
+        : <String, dynamic>{
+            'id': track.id,
+            'title': track.title,
+            'artists': track.artists,
+          };
+    unawaited(auth.recordAiEvents([
+      {
+        'type': type,
+        'artist': artist,
+        'progress': clampDouble(progress, 0, 1),
+        'track': trackData,
+      }
+    ]).catchError((Object _) {}));
+  }
+
+  void _onTrackEnded() {
+    final track = current;
+    if (track != null) {
+      if (_countedId != track.id) recordPlay(track);
+      _recordAiEvent('complete', track, progress: 1);
+    }
+    unawaited(next(auto: true));
+  }
+
+  void _recordAiSeek(Duration target) {
+    final track = current;
+    if (track == null || !audio.playing) return;
+    final difference = target.inMilliseconds - audio.position.inMilliseconds;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (difference.abs() < 5000 || now - _lastAiSeekAt < 3000) return;
+    _lastAiSeekAt = now;
+    _recordAiEvent(
+      difference > 0 ? 'seek_forward' : 'seek_back',
+      track,
+      progress: _trackProgress(track),
+    );
   }
 
   @override
   void dispose() {
+    AudioService.setMediaCommandHandler(null);
     _nodeSubscription?.cancel();
     _notifyTimer?.cancel();
     _toastTimer?.cancel();
@@ -366,8 +498,12 @@ class AppState extends ChangeNotifier {
 
   Map<String, dynamic> storeSnapshot() {
     final inPlaylist = playlists.expand((p) => p.ids).toSet();
+    final dailyMixes = _dailyMixCache ?? const <DailyMix>[];
+    final inDailyMix =
+        dailyMixes.expand((mix) => mix.tracks).map((t) => t.id).toSet();
     return {
       'liked': liked.toList(),
+      'disliked': disliked.toList(),
       'volume': volume,
       'queue': queue,
       'qi': qi,
@@ -380,10 +516,15 @@ class AppState extends ChangeNotifier {
       'savedTracks': byId.values
           .where((t) =>
               inPlaylist.contains(t.id) ||
+              inDailyMix.contains(t.id) ||
               (t.source == 'catalog' &&
                   (savedTrackIds.contains(t.id) || liked.contains(t.key))))
           .map((t) => t.toJson())
           .toList(),
+      'dailyMixes': {
+        'day': _dailySeed,
+        'items': dailyMixes.map((mix) => mix.toJson()).toList(),
+      },
       'profile': profile.toJson(),
       'setup': setup.toJson(),
       'settings': settings.toJson(),
@@ -391,21 +532,21 @@ class AppState extends ChangeNotifier {
   }
 
   void save() {
-    _invalidateDailyMixes();
     persistence.scheduleSave(storeSnapshot);
   }
 
   void _invalidateDailyMixes() {
-    _dailyMixCache = null;
+    if (_dailySeed != daySeed()) _dailyMixCache = null;
   }
 
   Future<void> resetAll() async {
     await WindowsEfficiencyService.setEnabled(false);
     await persistence.deleteState();
     await audio.stop();
-    _invalidateDailyMixes();
+    _dailyMixCache = null;
     byId.clear();
     liked.clear();
+    disliked.clear();
     queue.clear();
     qi = -1;
     shuffle = false;
@@ -489,7 +630,7 @@ class AppState extends ChangeNotifier {
   }
 
   void _refreshDailyMixLists() {
-    _invalidateDailyMixes();
+    _dailyMixCache = null;
     for (var i = 0; i < 5; i++) {
       lists.remove('mix$i');
       mixSeeds.remove('mix$i');
@@ -502,6 +643,10 @@ class AppState extends ChangeNotifier {
   }
 
   void go(String name, {Object? arg, bool push = true}) {
+    queueOpen = false;
+    if (name == 'artist' && arg is String && arg.trim().isNotEmpty) {
+      _recordAiEvent('artist_open', null, artist: arg.trim());
+    }
     if (push) history.add(PageRef(pageName, pageArg));
     pageName = name;
     pageArg = arg;
@@ -516,6 +661,7 @@ class AppState extends ChangeNotifier {
   }
 
   void back() {
+    queueOpen = false;
     if (history.isNotEmpty) {
       final previous = history.removeLast();
       pageName = previous.name;
@@ -634,6 +780,8 @@ class AppState extends ChangeNotifier {
 
   Future<void> playIds(List<String> ids, [int index = 0]) async {
     if (ids.isEmpty) return;
+    myWaveActive = false;
+    _waveSeenIds.clear();
     queue
       ..clear()
       ..addAll(ids);
@@ -693,9 +841,16 @@ class AppState extends ChangeNotifier {
       await audio.load(url, volume: volume);
       if (generation != _startGeneration) return;
       if (audio.lastError.isNotEmpty) throw Exception(audio.lastError);
+      await audio.setCurrentMedia(
+        title: track.title,
+        artist: track.primary,
+        album: track.album,
+        thumbnail: track.cover,
+      );
       await audio.play();
       if (generation != _startGeneration) return;
       if (audio.lastError.isNotEmpty) throw Exception(audio.lastError);
+      _recordAiEvent('start', track);
       if (pageName == 'home') scheduleRecs(1800);
     } catch (error) {
       if (generation == _startGeneration) {
@@ -726,12 +881,127 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> startMyWave() async {
+    if (myWaveActive) {
+      await togglePlay();
+      return;
+    }
+    if (myWaveLoading) return;
+    if (!auth.isSignedIn) {
+      showToast('Sign in to use your server-powered My Wave.');
+      return;
+    }
+    myWaveActive = true;
+    myWaveLoading = true;
+    _waveSeenIds
+      ..clear()
+      ..addAll(queue);
+    notifyListeners();
+    try {
+      final tracks = await _waveBatch();
+      if (tracks.length < 3) {
+        myWaveActive = false;
+        showToast(
+            'Listen to a few tracks or like some songs to build your wave.');
+        return;
+      }
+      queue
+        ..clear()
+        ..addAll(tracks.map((track) => track.id));
+      qi = 0;
+      shuffle = false;
+      _shufflePlayed.clear();
+      _waveSeenIds.addAll(queue);
+      save();
+      ensureCovers(tracks, priority: true);
+      await start();
+      showToast('My Wave is playing');
+    } catch (error) {
+      myWaveActive = false;
+      showToast('Could not start My Wave: $error');
+    } finally {
+      myWaveLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _extendMyWave() async {
+    if (!myWaveActive || _waveExtending) return;
+    _waveExtending = true;
+    try {
+      final tracks = await _waveBatch();
+      if (tracks.isEmpty || !myWaveActive) return;
+      queue.addAll(tracks.map((track) => track.id));
+      _waveSeenIds.addAll(tracks.map((track) => track.id));
+      ensureCovers(tracks);
+      save();
+      notifyListeners();
+    } catch (_) {
+      // A later track boundary retries the batch if the catalog is unavailable.
+    } finally {
+      _waveExtending = false;
+    }
+  }
+
+  Future<List<Track>> _waveBatch() async {
+    final likedArtistKeys = availableTracks()
+        .where((track) => liked.contains(track.key))
+        .expand((track) => track.artists)
+        .map(norm)
+        .where((artist) => artist.isNotEmpty)
+        .toSet();
+    final likedArtistTracks = seededShuffle(
+      availableTracks()
+          .where((track) =>
+              track.playable &&
+              !_waveSeenIds.contains(track.id) &&
+              !liked.contains(track.key) &&
+              !disliked.contains(track.key) &&
+              track.artists
+                  .any((artist) => likedArtistKeys.contains(norm(artist))))
+          .toList(),
+      daySeed() + _waveSeenIds.length,
+    ).take(5).toList();
+    final excludedIds = {
+      ..._waveSeenIds,
+      ...likedArtistTracks.map((t) => t.id)
+    };
+    final tracks = await auth.aiWaveTracks(excludeIds: excludedIds);
+    final aiTracks = tracks
+        .map(Track.fromCatalogJson)
+        .where((track) =>
+            track.playable &&
+            !liked.contains(track.key) &&
+            !disliked.contains(track.key) &&
+            !excludedIds.contains(track.id))
+        .map(registerTrack)
+        .toList();
+    return [...likedArtistTracks, ...aiTracks];
+  }
+
   Future<void> next({bool auto = false}) async {
     if (queue.isEmpty) return;
+    if (!auto && current != null) {
+      _recordAiEvent('skip', current, progress: _trackProgress(current!));
+    }
     if (auto && repeat == 'one') {
       await audio.seek(Duration.zero);
       await audio.play();
       return;
+    }
+    if (myWaveActive && qi >= queue.length - 1) {
+      await _extendMyWave();
+      var attempts = 0;
+      while (_waveExtending && attempts < 40) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        attempts++;
+      }
+      if (qi + 1 >= queue.length) {
+        if (auto) await audio.pause();
+        showToast('My Wave is waiting for more playable tracks.');
+        notifyListeners();
+        return;
+      }
     }
     int index;
     if (shuffle && queue.length > 1) {
@@ -776,6 +1046,13 @@ class AppState extends ChangeNotifier {
 
   Future<void> prev() async {
     if (queue.isEmpty) return;
+    if (current != null) {
+      _recordAiEvent(
+        audio.position.inSeconds > 3 ? 'seek_back' : 'skip',
+        current,
+        progress: _trackProgress(current!),
+      );
+    }
     if (audio.position.inSeconds > 3) {
       await audio.seek(Duration.zero);
       return;
@@ -789,17 +1066,19 @@ class AppState extends ChangeNotifier {
     final bounded = maximum > 0
         ? seconds.clamp(0.0, maximum / 1000)
         : math.max(0.0, seconds);
-    return audio.seek(
-      Duration(milliseconds: (bounded * 1000).round()),
-    );
+    final target = Duration(milliseconds: (bounded * 1000).round());
+    _recordAiSeek(target);
+    return audio.seek(target);
   }
 
   Future<void> seekToFraction(double fraction) async {
     final total = duration;
     if (total.inMilliseconds <= 0) return;
-    await audio.seek(Duration(
+    final target = Duration(
         milliseconds:
-            (total.inMilliseconds * clampDouble(fraction, 0, 1)).round()));
+            (total.inMilliseconds * clampDouble(fraction, 0, 1)).round());
+    _recordAiSeek(target);
+    await audio.seek(target);
   }
 
   Duration get duration {
@@ -835,11 +1114,34 @@ class AppState extends ChangeNotifier {
 
   void toggleLike(Track? track) {
     if (track == null) return;
-    if (liked.contains(track.key)) {
+    final wasLiked = liked.contains(track.key);
+    if (wasLiked) {
       liked.remove(track.key);
     } else {
       liked.add(track.key);
+      if (disliked.remove(track.key)) {
+        _recordAiEvent('undislike', track, progress: _trackProgress(track));
+      }
     }
+    _recordAiEvent(wasLiked ? 'unlike' : 'like', track,
+        progress: _trackProgress(track));
+    save();
+    notifyListeners();
+  }
+
+  void toggleDislike(Track? track) {
+    if (track == null) return;
+    final wasDisliked = disliked.contains(track.key);
+    if (wasDisliked) {
+      disliked.remove(track.key);
+    } else {
+      disliked.add(track.key);
+      if (liked.remove(track.key)) {
+        _recordAiEvent('unlike', track, progress: _trackProgress(track));
+      }
+    }
+    _recordAiEvent(wasDisliked ? 'undislike' : 'dislike', track,
+        progress: _trackProgress(track));
     save();
     notifyListeners();
   }
@@ -1206,6 +1508,77 @@ class AppState extends ChangeNotifier {
     if (pageName == 'home') scheduleRecs(6000);
   }
 
+  Future<int> trainAiModelAndPlay() async {
+    if (!auth.isSignedIn) {
+      showToast('Sign in to train your AI music model.');
+      return 0;
+    }
+    try {
+      final model = await auth.trainAiModel();
+      final seeds = asList(model['top_artists'])
+          .map(asMap)
+          .map((item) => asString(item['name']).trim())
+          .where((name) => name.isNotEmpty)
+          .take(12)
+          .toList();
+      if (seeds.isEmpty) {
+        showToast('Listen to and rate some tracks before training the model.');
+        return 0;
+      }
+
+      final candidates = <String, Track>{};
+      var nextSeed = 0;
+      Future<void> worker() async {
+        while (nextSeed < seeds.length) {
+          final seed = seeds[nextSeed++];
+          try {
+            final found = await catalog.search(seed);
+            for (final track in found.where((item) =>
+                item.playable && artistMatches(item, {looseKey(seed)}))) {
+              candidates.putIfAbsent(track.id, () => registerTrack(track));
+            }
+          } catch (_) {}
+        }
+      }
+
+      await Future.wait([worker(), worker(), worker()]);
+      if (candidates.length < 20) {
+        showToast('Not enough playable tracks were found for this model.');
+        return 0;
+      }
+      final rankedIds = await auth.rankAiTracks(candidates.values.toList());
+      final ranked =
+          rankedIds.map((id) => candidates[id]).whereType<Track>().toList();
+      final selected = <Track>[];
+      final artistCounts = <String, int>{};
+      for (final track in ranked) {
+        final key = norm(track.primary);
+        if ((artistCounts[key] ?? 0) >= 3) continue;
+        selected.add(track);
+        artistCounts[key] = (artistCounts[key] ?? 0) + 1;
+        if (selected.length == 25) break;
+      }
+      if (selected.length < 20) {
+        for (final track in ranked) {
+          if (selected.any((item) => item.id == track.id)) continue;
+          selected.add(track);
+          if (selected.length == 25) break;
+        }
+      }
+      if (selected.isEmpty) {
+        showToast('The model could not rank any playable tracks.');
+        return 0;
+      }
+      ensureCovers(selected, priority: true);
+      await playIds(selected.map((track) => track.id).toList());
+      showToast('AI Music Model started with ${selected.length} tracks.');
+      return selected.length;
+    } catch (error) {
+      showToast('Could not train the AI music model: $error');
+      return 0;
+    }
+  }
+
   List<TasteArtist> tasteArtists() => PerformanceMonitor.instance.measureSync(
         'tasteArtists',
         _buildTasteArtists,
@@ -1257,7 +1630,10 @@ class AppState extends ChangeNotifier {
     if (cached != null) return cached;
     return PerformanceMonitor.instance.measureSync('dailyMixes', () {
       final mixes = _buildDailyMixes();
-      _dailyMixCache = mixes;
+      if (mixes.isNotEmpty) {
+        _dailyMixCache = mixes;
+        persistence.scheduleSave(storeSnapshot);
+      }
       return mixes;
     });
   }
@@ -1272,6 +1648,22 @@ class AppState extends ChangeNotifier {
     final taste = tasteArtists();
     final mixes = <DailyMix>[];
     final used = <String>{};
+    final usedCovers = <String>{};
+    DailyMix createMix(List<Track> tracks, String seed) {
+      final uniqueCover = tracks
+          .where((track) =>
+              track.cover.isNotEmpty && !usedCovers.contains(track.cover))
+          .firstOrNull;
+      final coverTrack = uniqueCover ?? tracks.firstOrNull;
+      if (uniqueCover != null) usedCovers.add(uniqueCover.cover);
+      return DailyMix(
+        tracks,
+        seed,
+        coverTrackId: coverTrack?.id ?? '',
+        coverUrl: coverTrack?.cover ?? '',
+      );
+    }
+
     if (taste.isNotEmpty) {
       final weights = {for (final entry in taste) entry.key: entry.weight};
       for (final artist in taste) {
@@ -1315,7 +1707,7 @@ class AppState extends ChangeNotifier {
         if (mix.length < 3) continue;
         final limited =
             seededShuffle(mix.take(size).toList(), seed + mixes.length * 3);
-        mixes.add(DailyMix(limited, artist.name));
+        mixes.add(createMix(limited, artist.name));
         for (final track in limited) {
           used.add(track.id);
         }
@@ -1327,7 +1719,7 @@ class AppState extends ChangeNotifier {
       final chunk = left.skip(i).take(size).toList();
       if (chunk.length < 3 && mixes.isNotEmpty) break;
       if (chunk.isEmpty) break;
-      mixes.add(DailyMix(chunk, chunk.first.primary));
+      mixes.add(createMix(chunk, chunk.first.primary));
     }
     return mixes;
   }

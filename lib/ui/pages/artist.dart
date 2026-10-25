@@ -403,20 +403,32 @@ class MixPage extends StatelessWidget {
               'This mix is no longer available. Go back to Home and open it again.');
     }
     state.ensureCovers(allTracks, priority: true);
+    final match = cachedRe(r'mix(\d+)').firstMatch(listKey);
+    final index = match == null ? 0 : int.parse(match.group(1)!);
+    final dailyMix = state
+        .dailyMixes()
+        .where((mix) => mix.tracks
+            .any((track) => allTracks.any((item) => item.id == track.id)))
+        .firstOrNull;
     final tracks = allTracks.where((track) => track.cover.isNotEmpty).toList();
-    if (tracks.isEmpty) {
+    if (tracks.isEmpty && (dailyMix?.coverUrl ?? '').isEmpty) {
       if (allTracks.every((track) => state.noCover.contains(track.id))) {
         return const EmptyState(
             text: 'No mix tracks have available cover art.');
       }
       return const EmptyState(text: 'Preparing daily mix covers…');
     }
-    final match = cachedRe(r'mix(\d+)').firstMatch(listKey);
-    final index = match == null ? 0 : int.parse(match.group(1)!);
     final title = 'Daily Mix ${index + 1}';
-    final lead =
-        tracks.where((t) => t.cover.isNotEmpty).firstOrNull ?? tracks.first;
-    final ids = tracks.map((t) => t.id).toList();
+    final selectedCover = allTracks
+            .where((track) => track.id == dailyMix?.coverTrackId)
+            .firstOrNull ??
+        tracks.firstOrNull ??
+        allTracks.first;
+    final lead = (dailyMix?.coverUrl.isNotEmpty ?? false) &&
+            selectedCover.cover != dailyMix!.coverUrl
+        ? (selectedCover.copy()..cover = dailyMix.coverUrl)
+        : selectedCover;
+    final ids = allTracks.map((track) => track.id).toList();
 
     final compact = MediaQuery.sizeOf(context).width < 600;
     return Padding(

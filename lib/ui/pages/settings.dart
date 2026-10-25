@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -45,232 +46,356 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   bool _refreshingServer = false;
   bool _checkingForUpdates = false;
+  bool _trainingAi = false;
+  Map<String, dynamic> _aiStatus = const {};
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadAiStatus());
+  }
+
+  Future<void> _loadAiStatus() async {
+    if (!widget.state.auth.isSignedIn) return;
+    try {
+      final status = await widget.state.auth.aiModel();
+      if (mounted) setState(() => _aiStatus = status);
+    } catch (_) {}
+  }
+
+  Future<void> _trainAiModel() async {
+    if (_trainingAi || !widget.state.auth.isSignedIn) return;
+    setState(() => _trainingAi = true);
+    try {
+      await widget.state.trainAiModelAndPlay();
+      await _loadAiStatus();
+    } finally {
+      if (mounted) setState(() => _trainingAi = false);
+    }
+  }
+
+  Future<void> _clearAiModel() async {
+    if (_trainingAi || !widget.state.auth.isSignedIn) return;
+    final confirmed = await confirmDialog(
+      context,
+      title: 'Erase AI learning data?',
+      message:
+          'This removes your listening signals and trained model. Likes and playlists stay unchanged.',
+      confirmLabel: 'Erase data',
+    );
+    if (!confirmed || !mounted) return;
+    setState(() => _trainingAi = true);
+    try {
+      await widget.state.auth.clearAiData();
+      await _loadAiStatus();
+      widget.state.showToast('AI learning data erased.');
+    } catch (error) {
+      widget.state.showToast('Could not erase AI data: $error');
+    } finally {
+      if (mounted) setState(() => _trainingAi = false);
+    }
+  }
+
+  Widget _category(String title, BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(4, 10, 4, 12),
+        child: Text(
+          title,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: ThemeScope.of(context).mutedForeground,
+          ),
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
     final state = widget.state;
     final scope = ThemeScope.of(context);
     final compact = MediaQuery.sizeOf(context).width < 600;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(compact ? 16 : 32, compact ? 14 : 24,
-          compact ? 16 : 32, compact ? 24 : 36),
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 940),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(bottom: 22),
-                child: Row(children: [
-                  SizedBox(
-                    width: 28,
-                    height: 28,
-                    child: LIcon(
-                      'gear',
-                      size: 22,
-                      color: scope.light
-                          ? const Color(0xFF333337)
-                          : const Color(0xFFE4E4E6),
+    final aiModel = _aiStatus['model'];
+    final aiTrained = aiModel is Map && aiModel['trained'] == true;
+    final likedSeedCount =
+        aiModel is Map ? aiModel['liked_seed_count'] ?? 0 : 0;
+    return SingleChildScrollView(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(compact ? 16 : 32, compact ? 14 : 24,
+            compact ? 16 : 32, compact ? 24 : 36),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 940),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 22),
+                  child: Row(children: [
+                    SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: LIcon(
+                        'gear',
+                        size: 22,
+                        color: scope.light
+                            ? const Color(0xFF333337)
+                            : const Color(0xFFE4E4E6),
+                      ),
                     ),
-                  ),
-                  SizedBox(width: compact ? 10 : 16),
-                  Expanded(
+                    SizedBox(width: compact ? 10 : 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Settings',
+                            style: TextStyle(
+                              fontSize: 30,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: -0.8,
+                              color: scope.foreground,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            'Make Lumino feel like yours.',
+                            style: TextStyle(
+                              fontSize: 13.5,
+                              color: scope.mutedForeground,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ]),
+                ),
+                _category('APPEARANCE', context),
+                Reveal(
+                    index: 0,
+                    child: _SetCard(
+                      icon: 'spark',
+                      title: 'Appearance',
+                      subtitle: 'Choose how Lumino looks on your desktop.',
+                      child: _ThemeGrid(state: state),
+                    )),
+                Reveal(
+                    index: 1,
+                    child: _SetCard(
+                      icon: 'eye',
+                      title: 'Artwork previews',
+                      subtitle:
+                          'Open cover artwork in fullscreen when clicked.',
+                      trailing: SwitchPill(
+                        value: state.settings.openArtwork,
+                        onTap: () =>
+                            state.setArtworkOpen(!state.settings.openArtwork),
+                      ),
+                      hasBody: false,
+                      child: const SizedBox.shrink(),
+                    )),
+                Reveal(
+                    index: 2,
+                    child: _SetCard(
+                      icon: 'eyeOff',
+                      title: 'Fullscreen background blur',
+                      subtitle:
+                          'Blur the artwork behind the fullscreen player.',
+                      trailing: SwitchPill(
+                        value: state.settings.blurFullscreenArtwork,
+                        onTap: () => state.setFullscreenArtworkBlur(
+                            !state.settings.blurFullscreenArtwork),
+                      ),
+                      hasBody: false,
+                      child: const SizedBox.shrink(),
+                    )),
+                Reveal(
+                    index: 3,
+                    child: _SetCard(
+                      icon: 'imageOff',
+                      title: 'Fullscreen background artwork',
+                      subtitle: 'Show the cover behind the fullscreen player.',
+                      trailing: SwitchPill(
+                        value: state.settings.showFullscreenArtwork,
+                        onTap: () => state.setFullscreenArtworkVisible(
+                            !state.settings.showFullscreenArtwork),
+                      ),
+                      hasBody: false,
+                      child: const SizedBox.shrink(),
+                    )),
+                if (Platform.isWindows)
+                  Reveal(
+                      index: 4,
+                      child: _SetCard(
+                        icon: 'bolt',
+                        title: 'Windows efficiency mode',
+                        subtitle:
+                            'Reduce power use while Lumino is minimized or hidden in the tray.',
+                        trailing: SwitchPill(
+                          value: state.settings.windowsEfficiencyMode,
+                          onTap: () async {
+                            await state.setWindowsEfficiencyMode(
+                                !state.settings.windowsEfficiencyMode);
+                          },
+                        ),
+                        hasBody: false,
+                        child: const SizedBox.shrink(),
+                      )),
+                _category('AUDIO', context),
+                Reveal(
+                    index: 5,
+                    child: _SetCard(
+                      icon: 'volume',
+                      title: 'Streaming quality',
+                      subtitle: 'Higher quality uses more data.',
+                      child: _QualitySeg(state: state),
+                    )),
+                Reveal(index: 6, child: _EqCard(state: state)),
+                _category('PERSONALIZED MUSIC', context),
+                Reveal(
+                  index: 7,
+                  child: _SetCard(
+                    icon: 'spark',
+                    title: 'AI Music Model by fascind',
+                    subtitle:
+                        'Learns from your listening and likes, then builds a changing mix with related artists.',
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Settings',
+                          '${_aiStatus['event_count'] ?? 0} listening signals · '
+                          '$likedSeedCount recent likes used'
+                          '${aiTrained ? ' · Model trained' : ''}',
                           style: TextStyle(
-                            fontSize: 30,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: -0.8,
-                            color: scope.foreground,
+                            fontSize: 13,
+                            color: ThemeScope.of(context).mutedForeground,
                           ),
                         ),
-                        const SizedBox(height: 3),
-                        Text(
-                          'Make Lumino feel like yours.',
-                          style: TextStyle(
-                            fontSize: 13.5,
-                            color: scope.mutedForeground,
+                        const SizedBox(height: 12),
+                        if (state.auth.isSignedIn)
+                          Wrap(spacing: 8, runSpacing: 8, children: [
+                            ChipButton(
+                              label: _trainingAi ? 'Training…' : 'Train & play',
+                              icon: _trainingAi ? null : 'play',
+                              onTap: _trainingAi ? null : _trainAiModel,
+                            ),
+                            ChipButton(
+                              label: 'Erase data',
+                              icon: 'trash',
+                              ghost: true,
+                              onTap: _trainingAi ? null : _clearAiModel,
+                            ),
+                          ])
+                        else
+                          Text(
+                            'Sign in to train and sync your fascind model.',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: ThemeScope.of(context).mutedForeground,
+                            ),
                           ),
-                        ),
                       ],
                     ),
                   ),
-                ]),
-              ),
-              Reveal(
-                  index: 0,
-                  child: _SetCard(
-                    icon: 'spark',
-                    title: 'Appearance',
-                    subtitle: 'Choose how Lumino looks on your desktop.',
-                    child: _ThemeGrid(state: state),
-                  )),
-              Reveal(
-                  index: 1,
-                  child: _SetCard(
-                    icon: 'eye',
-                    title: 'Artwork previews',
-                    subtitle: 'Open cover artwork in fullscreen when clicked.',
-                    trailing: SwitchPill(
-                      value: state.settings.openArtwork,
-                      onTap: () =>
-                          state.setArtworkOpen(!state.settings.openArtwork),
-                    ),
-                    hasBody: false,
-                    child: const SizedBox.shrink(),
-                  )),
-              Reveal(
-                  index: 2,
-                  child: _SetCard(
-                    icon: 'eyeOff',
-                    title: 'Fullscreen background blur',
-                    subtitle: 'Blur the artwork behind the fullscreen player.',
-                    trailing: SwitchPill(
-                      value: state.settings.blurFullscreenArtwork,
-                      onTap: () => state.setFullscreenArtworkBlur(
-                          !state.settings.blurFullscreenArtwork),
-                    ),
-                    hasBody: false,
-                    child: const SizedBox.shrink(),
-                  )),
-              Reveal(
-                  index: 3,
-                  child: _SetCard(
-                    icon: 'imageOff',
-                    title: 'Fullscreen background artwork',
-                    subtitle: 'Show the cover behind the fullscreen player.',
-                    trailing: SwitchPill(
-                      value: state.settings.showFullscreenArtwork,
-                      onTap: () => state.setFullscreenArtworkVisible(
-                          !state.settings.showFullscreenArtwork),
-                    ),
-                    hasBody: false,
-                    child: const SizedBox.shrink(),
-                  )),
-              if (Platform.isWindows)
+                ),
+                _category('LIBRARY & SERVICES', context),
                 Reveal(
-                    index: 4,
+                    index: 8,
                     child: _SetCard(
                       icon: 'bolt',
-                      title: 'Windows efficiency mode',
+                      title: 'Server',
                       subtitle:
-                          'Reduce power use while Lumino is minimized or hidden in the tray.',
-                      trailing: SwitchPill(
-                        value: state.settings.windowsEfficiencyMode,
-                        onTap: () async {
-                          await state.setWindowsEfficiencyMode(
-                              !state.settings.windowsEfficiencyMode);
-                        },
-                      ),
-                      hasBody: false,
-                      child: const SizedBox.shrink(),
-                    )),
-              Reveal(
-                  index: 5,
-                  child: _SetCard(
-                    icon: 'volume',
-                    title: 'Streaming quality',
-                    subtitle: 'Higher quality uses more data.',
-                    child: _QualitySeg(state: state),
-                  )),
-              Reveal(index: 6, child: _EqCard(state: state)),
-              Reveal(
-                  index: 7,
-                  child: _SetCard(
-                    icon: 'bolt',
-                    title: 'Server',
-                    subtitle:
-                        'Lumino streams audio through your own Lumino nodes.',
-                    trailing: ChipButton(
-                      label: 'Refresh',
-                      ghost: true,
-                      height: 30,
-                      icon: _refreshingServer ? null : 'restore',
-                      onTap: _refreshingServer
-                          ? null
-                          : () async {
-                              setState(() => _refreshingServer = true);
-                              try {
-                                state.applyNodeState(await state.node.state());
-                              } catch (_) {}
-                              if (mounted) {
-                                setState(() => _refreshingServer = false);
-                              }
-                            },
-                    ),
-                    child: _ServerList(state: state),
-                  )),
-              Reveal(
-                  index: 8,
-                  child: _SetCard(
-                    icon: 'folderPlus',
-                    title: 'Import music',
-                    subtitle:
-                        'Bring liked songs and playlists from Spotify, Yandex Music, YouTube Music and others.',
-                    trailing: ChipButton(
-                      label: 'Import…',
-                      onTap: () => showImporter(context, state),
-                    ),
-                    hasBody: false,
-                    child: const SizedBox.shrink(),
-                  )),
-              if (Platform.isWindows)
-                Reveal(
-                    index: 9,
-                    child: _SetCard(
-                      icon: 'restore',
-                      title: 'Updates',
-                      subtitle:
-                          'Check GitHub for the latest Windows version and install it.',
+                          'Lumino streams audio through your own Lumino nodes.',
                       trailing: ChipButton(
-                        label: _checkingForUpdates ? 'Checking…' : 'Check now',
-                        icon: _checkingForUpdates ? null : 'restore',
+                        label: 'Refresh',
                         ghost: true,
                         height: 30,
-                        onTap: _checkingForUpdates
+                        icon: _refreshingServer ? null : 'restore',
+                        onTap: _refreshingServer
                             ? null
                             : () async {
-                                setState(() => _checkingForUpdates = true);
+                                setState(() => _refreshingServer = true);
                                 try {
-                                  await widget.onCheckForUpdates();
-                                } finally {
-                                  if (mounted) {
-                                    setState(() => _checkingForUpdates = false);
-                                  }
+                                  state
+                                      .applyNodeState(await state.node.state());
+                                } catch (_) {}
+                                if (mounted) {
+                                  setState(() => _refreshingServer = false);
                                 }
                               },
                       ),
+                      child: _ServerList(state: state),
+                    )),
+                Reveal(
+                    index: 9,
+                    child: _SetCard(
+                      icon: 'folderPlus',
+                      title: 'Import music',
+                      subtitle:
+                          'Bring liked songs and playlists from Spotify, Yandex Music, YouTube Music and others.',
+                      trailing: ChipButton(
+                        label: 'Import…',
+                        onTap: () => showImporter(context, state),
+                      ),
                       hasBody: false,
                       child: const SizedBox.shrink(),
                     )),
-              Reveal(
-                  index: 10,
-                  child: _SetCard(
-                    icon: 'user',
-                    title: 'Account',
-                    subtitle: 'Sign out of your Lumino account on this device.',
-                    trailing: ChipButton(
-                      label: 'Sign out',
-                      icon: 'exit',
-                      ghost: true,
-                      onTap: () async {
-                        final confirmed = await confirmDialog(
-                          context,
-                          title: 'Sign out?',
-                          message:
-                              'You can sign back in to access your library.',
-                          confirmLabel: 'Sign out',
-                        );
-                        if (confirmed) await widget.onSignOut();
-                      },
-                    ),
-                    child: const SizedBox.shrink(),
-                  )),
-            ],
+                if (Platform.isWindows)
+                  Reveal(
+                      index: 10,
+                      child: _SetCard(
+                        icon: 'restore',
+                        title: 'Updates',
+                        subtitle:
+                            'Check GitHub for the latest Windows version and install it.',
+                        trailing: ChipButton(
+                          label:
+                              _checkingForUpdates ? 'Checking…' : 'Check now',
+                          icon: _checkingForUpdates ? null : 'restore',
+                          ghost: true,
+                          height: 30,
+                          onTap: _checkingForUpdates
+                              ? null
+                              : () async {
+                                  setState(() => _checkingForUpdates = true);
+                                  try {
+                                    await widget.onCheckForUpdates();
+                                  } finally {
+                                    if (mounted) {
+                                      setState(
+                                          () => _checkingForUpdates = false);
+                                    }
+                                  }
+                                },
+                        ),
+                        hasBody: false,
+                        child: const SizedBox.shrink(),
+                      )),
+                _category('ACCOUNT', context),
+                Reveal(
+                    index: 11,
+                    child: _SetCard(
+                      icon: 'user',
+                      title: 'Account',
+                      subtitle:
+                          'Sign out of your Lumino account on this device.',
+                      trailing: ChipButton(
+                        label: 'Sign out',
+                        icon: 'exit',
+                        ghost: true,
+                        onTap: () async {
+                          final confirmed = await confirmDialog(
+                            context,
+                            title: 'Sign out?',
+                            message:
+                                'You can sign back in to access your library.',
+                            confirmLabel: 'Sign out',
+                          );
+                          if (confirmed) await widget.onSignOut();
+                        },
+                      ),
+                      child: const SizedBox.shrink(),
+                    )),
+              ],
+            ),
           ),
         ),
       ),
