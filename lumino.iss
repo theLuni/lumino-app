@@ -1,5 +1,4 @@
-﻿
-#define MyAppName "Lumino"
+﻿#define MyAppName "Lumino"
 #define MyAppVersion "0.3.4"
 #define MyAppExeName "lumino.exe"
 #define MyAppPublisher "Lumino Industries"
@@ -34,17 +33,17 @@ Uninstallable=yes
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Messages]
-WelcomeLabel1=Добро пожаловать в Lumino 💀
-WelcomeLabel2=Сейчас мы сделаем вид, что всё под контролем.%n%nНажми «Далее». Назад пути нет.
-FinishedHeadingLabel=Lumino успешно материализовался!
-FinishedLabel=Установка завершена.%n%nПоздравляем. Ваш компьютер теперь в клубе Lumino.
+WelcomeLabel1=Добро пожаловать в установку Lumino
+WelcomeLabel2=Эта программа установит Lumino на ваш компьютер.%n%nРекомендуется закрыть все остальные приложения перед тем, как нажать «Далее».
+FinishedHeadingLabel=Установка Lumino завершена
+FinishedLabel=Lumino успешно установлен на ваш компьютер.%n%nНажмите «Завершить», чтобы закрыть мастер установки.
 
 [Files]
 Source: "{#SourcePath}\assets\icon.ico"; DestDir: "{app}"; DestName: "lumino.ico"; Flags: ignoreversion
 Source: "{#SourcePath}\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Tasks]
-Name: "desktopicon"; Description: "Создать ярлык на рабочем столе"; GroupDescription: "Дополнительные приколы:"; Flags: unchecked
+Name: "desktopicon"; Description: "Создать значок на рабочем столе"; GroupDescription: "Дополнительные значки:"; Flags: unchecked
 
 [Icons]
 Name: "{autoprograms}\Lumino"; Filename: "{app}\lumino.exe"; IconFilename: "{app}\lumino.ico"
@@ -57,4 +56,4 @@ Root: HKCU; Subkey: "Software\Classes\lumino\DefaultIcon"; ValueType: string; Va
 Root: HKCU; Subkey: "Software\Classes\lumino\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Flags: uninsdeletekey
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Запустить Lumino и принять последствия"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Запустить Lumino"; Flags: postinstall nowait skipifsilent

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -339,114 +340,236 @@ class _HomeCardsPlaceholder extends StatelessWidget {
   }
 }
 
-class _MyWavePanel extends StatelessWidget {
+class _MyWavePanel extends StatefulWidget {
   const _MyWavePanel({required this.state});
   final AppState state;
 
   @override
+  State<_MyWavePanel> createState() => _MyWavePanelState();
+}
+
+class _MyWavePanelState extends State<_MyWavePanel>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _colorController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  );
+  Color _fromColor = const Color(0xFF63C6B2);
+  Color _toColor = const Color(0xFF63C6B2);
+  String _requestedCover = '';
+
+  AppState get state => widget.state;
+
+  @override
+  void dispose() {
+    _colorController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadCoverColor(Track track) async {
+    if (track.cover.isEmpty || track.cover == _requestedCover) return;
+    _requestedCover = track.cover;
+    final value = await state.colorFor(track.cover);
+    if (!mounted ||
+        value == null ||
+        track.cover != _requestedCover ||
+        state.current?.cover != track.cover) {
+      return;
+    }
+    final color = Color(0xFF000000 | value);
+    if (color == _toColor) return;
+    _fromColor = Color.lerp(_fromColor, _toColor, _colorController.value)!;
+    _toColor = color;
+    _colorController.forward(from: 0);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final active = state.myWaveActive;
-    final likedArtistKeys = state
-        .availableTracks()
-        .where((track) => state.liked.contains(track.key))
-        .expand((track) => track.artists)
-        .map(norm)
-        .toSet();
-    final likedArtists = state
-        .tasteArtists()
-        .where((artist) => likedArtistKeys.contains(artist.key))
-        .take(5)
-        .toList();
-    final label = state.myWaveLoading
-        ? 'Building your wave...'
-        : active
-            ? (state.playing ? 'Pause My Wave' : 'Resume My Wave')
-            : 'Play My Wave';
+    final track = state.current;
+    if (track != null) unawaited(_loadCoverColor(track));
+    final playing = track != null && state.playing;
+    final playingWave = state.myWaveActive && playing;
+    final liked = track != null && state.liked.contains(track.key);
+    final disliked = track != null && state.disliked.contains(track.key);
+    final compact = MediaQuery.sizeOf(context).width < 600;
+    final coverSize = compact ? 58.0 : 66.0;
+    final muted = ThemeScope.of(context).mutedForeground;
+    final light = ThemeScope.of(context).light;
+    final status = playingWave
+        ? 'Сейчас играет: Моя волна'
+        : playing
+            ? 'Сейчас играет:'
+            : state.myWaveLoading
+                ? 'Создаём волну…'
+                : 'Моя волна';
     return Padding(
       padding: const EdgeInsets.only(top: 20),
-      child: SizedBox(
-        width: double.infinity,
-        child: GlassPanel(
-          radius: 16,
-          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 22),
-          child: LayoutBuilder(builder: (context, constraints) {
-            final heading = Row(children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: const Color(0xFF63C6B2).withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                alignment: Alignment.center,
-                child: const LIcon('spark', size: 24, color: Color(0xFF63C6B2)),
+      child: AnimatedBuilder(
+        animation: _colorController,
+        builder: (context, _) {
+          final accent = Color.lerp(
+            _fromColor,
+            _toColor,
+            Curves.easeInOut.transform(_colorController.value),
+          )!;
+          final surface =
+              light ? const Color(0xFFF8F9FB) : const Color(0xFF121417);
+          final cardColor = Color.lerp(
+            surface,
+            accent,
+            light ? 0.13 : 0.22,
+          )!;
+          return Container(
+            clipBehavior: Clip.antiAlias,
+            padding: EdgeInsets.symmetric(
+              horizontal: compact ? 11 : 15,
+              vertical: compact ? 10 : 12,
+            ),
+            decoration: BoxDecoration(
+              color: cardColor,
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(34),
+                topRight: Radius.circular(20),
+                bottomRight: Radius.circular(34),
+                bottomLeft: Radius.circular(20),
               ),
-              const SizedBox(width: 14),
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('My Wave',
-                        style: TextStyle(
-                            fontSize: 21, fontWeight: FontWeight.w700)),
-                    SizedBox(height: 5),
-                    Text('Your favorites, plus artists you may love next.',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 13)),
-                  ],
-                ),
+              border: Border.all(
+                color: Color.lerp(
+                  cardColor,
+                  light ? const Color(0xFF17181C) : Colors.white,
+                  light ? 0.12 : 0.09,
+                )!,
               ),
-            ]);
-            final button = ChipButton(
-              label: label,
-              icon: active && state.playing ? 'pause' : 'play',
-              onTap: state.myWaveLoading ? null : () => state.startMyWave(),
-              height: 40,
-              fontSize: 13,
-            );
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x19000000),
+                  blurRadius: 18,
+                  offset: Offset(0, 8),
+                ),
+              ],
+            ),
+            child: Row(
               children: [
-                if (constraints.maxWidth < 560) ...[
-                  heading,
-                  const SizedBox(height: 18),
-                  Align(alignment: Alignment.centerRight, child: button),
-                ] else
-                  Row(children: [
-                    Expanded(child: heading),
-                    const SizedBox(width: 18),
-                    button,
-                  ]),
-                if (likedArtists.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  Text(
-                    'Artists you like',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: ThemeScope.of(context).mutedForeground,
-                    ),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(compact ? 14 : 17),
+                  child: SizedBox.square(
+                    dimension: coverSize,
+                    child: track == null || track.cover.isEmpty
+                        ? const ColoredBox(
+                            color: Color(0xFF24242A),
+                            child: Center(
+                              child: LIcon('spark',
+                                  size: 24, color: Color(0xFF63C6B2)),
+                            ),
+                          )
+                        : CoverArt(
+                            track: track,
+                            radius: compact ? 14 : 17,
+                            openArtwork: false,
+                          ),
                   ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
+                ),
+                SizedBox(width: compact ? 10 : 14),
+                Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      for (final artist in likedArtists)
-                        ChipButton(
-                          label: artist.name,
-                          icon: 'user',
-                          ghost: true,
-                          onTap: () => state.go('artist', arg: artist.name),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              status,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: playingWave
+                                    ? const Color(0xFF63C6B2)
+                                    : muted,
+                                fontSize: compact ? 10 : 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        track?.title ?? 'Твоя музыка ещё впереди',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: compact ? 14 : 16,
+                          height: 1.15,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.15,
                         ),
+                      ),
+                      Text(
+                        track?.primary ?? 'Персональная подборка',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: muted,
+                          fontSize: 12,
+                          height: 1.4,
+                        ),
+                      ),
                     ],
                   ),
-                ],
+                ),
+                const SizedBox(width: 6),
+                IconAction(
+                  icon: playing ? 'pause' : 'play',
+                  size: compact ? 32 : 36,
+                  iconSize: compact ? 14 : 16,
+                  borderRadius: compact ? 16 : 18,
+                  color: light ? Colors.white : const Color(0xFF17181C),
+                  hoverColor: light ? Colors.white : const Color(0xFF17181C),
+                  backgroundColor:
+                      light ? const Color(0xFF17181C) : Colors.white,
+                  hoverBackgroundColor:
+                      light ? const Color(0xFF34343D) : const Color(0xFFE8E8EB),
+                  tooltip: state.myWaveLoading
+                      ? 'Создаём волну…'
+                      : playing
+                          ? 'Пауза'
+                          : 'Воспроизвести',
+                  onTap: state.myWaveLoading
+                      ? null
+                      : () {
+                          if (state.myWaveActive || track == null) {
+                            state.startMyWave();
+                          } else {
+                            state.togglePlay();
+                          }
+                        },
+                ),
+                const SizedBox(width: 3),
+                IconAction(
+                  icon: 'heart',
+                  size: compact ? 30 : 34,
+                  iconSize: compact ? 15 : 17,
+                  active: liked,
+                  filled: liked,
+                  tooltip: liked ? 'Убрать из любимых' : 'Нравится',
+                  onTap: track == null ? null : () => state.toggleLike(track),
+                ),
+                const SizedBox(width: 1),
+                IconAction(
+                  icon: 'thumbDown',
+                  size: compact ? 28 : 32,
+                  iconSize: compact ? 13 : 15,
+                  active: disliked,
+                  filled: disliked,
+                  tooltip: disliked ? 'Убрать дизлайк' : 'Не нравится',
+                  onTap:
+                      track == null ? null : () => state.toggleDislike(track),
+                ),
               ],
-            );
-          }),
-        ),
+            ),
+          );
+        },
       ),
     );
   }

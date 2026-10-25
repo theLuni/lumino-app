@@ -1503,6 +1503,7 @@ class IconAction extends StatefulWidget {
     this.animateOnTap = false,
     this.backgroundColor = Colors.transparent,
     this.hoverBackgroundColor,
+    this.iconShadowColor,
   });
 
   final String icon;
@@ -1519,6 +1520,7 @@ class IconAction extends StatefulWidget {
   final bool animateOnTap;
   final Color backgroundColor;
   final Color? hoverBackgroundColor;
+  final Color? iconShadowColor;
 
   @override
   State<IconAction> createState() => _IconActionState();
@@ -1581,17 +1583,38 @@ class _IconActionState extends State<IconAction>
               children: [
                 ScaleTransition(
                   scale: _scale,
-                  child: LIcon(
-                    widget.icon,
-                    size: widget.iconSize,
-                    color: light
-                        ? (widget.active || hovered
-                            ? const Color(0xFF17181C)
-                            : const Color(0xFF686B73))
-                        : (widget.active || hovered
-                            ? widget.hoverColor
-                            : widget.color),
-                    filled: widget.filled,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      if (widget.iconShadowColor != null)
+                        ImageFiltered(
+                          imageFilter: ui.ImageFilter.blur(
+                            sigmaX: 2,
+                            sigmaY: 2,
+                          ),
+                          child: Transform.translate(
+                            offset: const Offset(0, 1),
+                            child: LIcon(
+                              widget.icon,
+                              size: widget.iconSize,
+                              color: widget.iconShadowColor,
+                              filled: widget.filled,
+                            ),
+                          ),
+                        ),
+                      LIcon(
+                        widget.icon,
+                        size: widget.iconSize,
+                        color: light
+                            ? (widget.active || hovered
+                                ? const Color(0xFF17181C)
+                                : const Color(0xFF686B73))
+                            : (widget.active || hovered
+                                ? widget.hoverColor
+                                : widget.color),
+                        filled: widget.filled,
+                      ),
+                    ],
                   ),
                 ),
                 if (widget.dot)

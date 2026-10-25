@@ -950,6 +950,8 @@ class _MainPanelState extends State<_MainPanel> {
   @override
   Widget build(BuildContext context) {
     final mobile = !widget.desktop;
+    final boundedPage =
+        state.pageName == 'chats' || state.pageName == 'public-playlist';
     return Container(
       decoration: BoxDecoration(
         color: widget.light ? const Color(0xF7FAFAFC) : const Color(0xE6080808),
@@ -962,7 +964,7 @@ class _MainPanelState extends State<_MainPanel> {
       clipBehavior: Clip.antiAlias,
       child: Stack(children: [
         Positioned.fill(
-          child: state.pageName == 'chats'
+          child: boundedPage
               ? Padding(
                   padding: EdgeInsets.only(top: mobile ? 44 : 50),
                   child: AnimatedSwitcher(
